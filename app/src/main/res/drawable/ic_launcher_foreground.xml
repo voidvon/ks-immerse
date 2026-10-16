@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 屏幕外框 -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M32,32 h44 a6,6 0 0 1 6,6 v32 a6,6 0 0 1 -6,6 h-44 a6,6 0 0 1 -6,-6 v-32 a6,6 0 0 1 6,-6 z"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="4" />
+
+    <!-- 播放三角 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M46,44 L62,54 L46,64 Z" />
+
+    <!-- 被淡化的右侧栏 -->
+    <path
+        android:fillAlpha="0.30"
+        android:fillColor="#FFFFFF"
+        android:pathData="M68,42 h6 a2,2 0 0 1 2,2 v16 a2,2 0 0 1 -2,2 h-6 a2,2 0 0 1 -2,-2 v-16 a2,2 0 0 1 2,-2 z" />
+
+</vector>

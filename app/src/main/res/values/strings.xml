@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">快手极速版·沉浸</string>
+    <string name="module_description">把快手极速版信息流的右侧操作栏与底部信息区降为半透明，专注看视频，同时保留点击能力。</string>
+
+    <string name="section_general">总开关</string>
+    <string name="label_enabled">启用沉浸模式</string>
+    <string name="label_alpha">目标透明度</string>
+    <string name="alpha_value_format">%1$d%%　（alpha = %2$.2f）</string>
+
+    <string name="section_targets">作用范围</string>
+    <string name="label_right_column">右侧整列（头像 / 关注 / 点赞 / 评论 / 收藏 / 转发）</string>
+    <string name="label_bottom_caption">底部信息区（发布者名称 / 说明 / 标签）</string>
+    <string name="label_disclaimer">作者声明</string>
+    <string name="label_bottom_hot">底部热点条（🔥 热点 · xxx）</string>
+    <string name="label_pendant">右上角红包 / 金币悬浮挂件</string>
+    <string name="label_pin_search">暂停时的「搜画面」固定到右上角</string>
+    <string name="label_contain_video">视频完整显示（contain，不裁切左右）</string>
+
+    <string name="section_hint">说明</string>
+    <string name="hint_enable_module">1. 需要在 Vector 管理器中启用本模块，作用域勾选「快手极速版」。</string>
+    <string name="hint_restart">2. 修改设置后请重启（强行停止）快手极速版，让新的控件重新创建。</string>
+    <string name="hint_scope">3. 仅在 com.kuaishou.nebula（快手极速版）14.7.10.11757 上验证通过，其他版本可能因控件 id 变化需要重新适配。</string>
+</resources>

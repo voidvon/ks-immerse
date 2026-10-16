@@ -1,0 +1,22 @@
+# 统一换行符为 LF，避免跨平台协作时整个文件被标记成改动
+* text=auto eol=lf
+
+# Windows 批处理必须保持 CRLF，否则在 Windows 上无法执行
+*.bat text eol=crlf
+
+# 明确标记为二进制，禁止任何换行符转换
+*.jar   binary
+*.apk   binary
+*.aab   binary
+*.dex   binary
+*.so    binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.webp  binary
+*.gif   binary
+*.ttf   binary
+*.otf   binary
+
+# 逆向 dump 文件不做 diff 展示（体积大且无意义）
+_recon/** -diff
