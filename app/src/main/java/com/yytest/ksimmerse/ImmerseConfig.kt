@@ -24,10 +24,15 @@ class ImmerseConfig {
         const val KEY_PENDANT = "fade_pendant"
         const val KEY_PIN_SEARCH = "pin_search_bubble"
         const val KEY_CONTAIN_VIDEO = "contain_video"
+        const val KEY_SKIP_AD = "skip_ad"
+        const val KEY_AUTO_SKIP_UNMATCHED = "auto_skip_unmatched"
         const val KEY_DEBUG_DUMP = "debug_dump_tree"
 
         /** 需求：右侧栏与底部信息区改为 0.1 透明度，保留可点击 */
         const val DEFAULT_ALPHA = 0.1f
+
+        /** 广告快进的目标：跳到「总时长 - 这个值」，也就是最后 0.5 秒 */
+        const val AD_TAIL_MS = 500L
     }
 
     @Volatile
@@ -63,6 +68,22 @@ class ImmerseConfig {
     var containVideo: Boolean = true
         private set
 
+    /** 检测到底部出现「广告」标签时，把进度快进到最后 0.5 秒 */
+    @Volatile
+    var skipAd: Boolean = false
+        private set
+
+    /**
+     * 自动划走「沉浸没生效」的视频。
+     *
+     * 判据：当前可见页面上**没有任何目标控件处于 config.alpha 的透明度** ——
+     * 说明这一页的右侧栏/底部信息区不是我们认得的那套控件（广告页就是这种），
+     * 沉浸效果出不来，于是注入一个上滑手势翻到下一个。
+     */
+    @Volatile
+    var autoSkipUnmatched: Boolean = true
+        private set
+
     /** 调试开关：把宿主的视图树 dump 到日志，用于适配新版本 */
     @Volatile
     var debugDumpTree: Boolean = true
@@ -77,6 +98,8 @@ class ImmerseConfig {
     private var disclaimerIds: IntArray = idsOf(Targets.DISCLAIMER)
     @Volatile
     private var hotIds: IntArray = idsOf(Targets.BOTTOM_HOT)
+    @Volatile
+    private var adLabelIds: IntArray = idsOf(Targets.AD_LABEL)
 
     /** 启用分组的 id 并集，热路径只扫这个小数组 */
     @Volatile
@@ -102,6 +125,8 @@ class ImmerseConfig {
         fadePendant = prefs?.getBoolean(KEY_PENDANT, true) ?: true
         pinSearchBubble = prefs?.getBoolean(KEY_PIN_SEARCH, true) ?: true
         containVideo = prefs?.getBoolean(KEY_CONTAIN_VIDEO, true) ?: true
+        skipAd = prefs?.getBoolean(KEY_SKIP_AD, false) ?: false
+        autoSkipUnmatched = prefs?.getBoolean(KEY_AUTO_SKIP_UNMATCHED, true) ?: true
         debugDumpTree = prefs?.getBoolean(KEY_DEBUG_DUMP, false) ?: false
         rebuild()
     }
@@ -121,6 +146,7 @@ class ImmerseConfig {
         captionIds = resolve(res, Targets.BOTTOM_CAPTION, captionIds)
         disclaimerIds = resolve(res, Targets.DISCLAIMER, disclaimerIds)
         hotIds = resolve(res, Targets.BOTTOM_HOT, hotIds)
+        adLabelIds = resolve(res, Targets.AD_LABEL, adLabelIds)
         rebuild()
         return true
     }
@@ -153,6 +179,12 @@ class ImmerseConfig {
 
     /** 命中需要固定位置的控件？ */
     fun isPinTarget(id: Int): Boolean = enabled && pinSearchBubble && id == Targets.ID_SEARCH_BUBBLE
+
+    /** 当前生效的「广告标签」id 列表（热路径只扫这个小数组） */
+    fun adLabelIds(): IntArray = adLabelIds
+
+    /** 所有需要降透明度的目标 id（用于判断"这一页到底有没有匹配上"） */
+    fun targetIds(): IntArray = targets
 
     /**
      * 按控件判断命中：先看 id，再看类名。
@@ -226,6 +258,10 @@ class ImmerseConfig {
         append(" pendant=").append(fadePendant)
         append(" pinSearch=").append(pinSearchBubble)
         append(" containVideo=").append(containVideo)
+        append(" skipAd=").append(skipAd)
+        append(" autoSkipUnmatched=").append(autoSkipUnmatched)
+        append(" debug=").append(debugDumpTree)
+        append(" adLabel=").append(adLabelIds.joinToString(",") { hex(it) })
     }
 
     private fun hex(v: Int) = "0x" + Integer.toHexString(v)

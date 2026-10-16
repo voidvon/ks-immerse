@@ -92,6 +92,11 @@ class ImmerseModule : XposedModule() {
             logW("remote preferences unavailable, fallback to defaults", t)
         }
         config.bind(prefs)
+        try {
+            logI("prefs group=${ImmerseConfig.PREFS_GROUP} null=${prefs == null} keys=${prefs?.all?.keys}")
+        } catch (t: Throwable) {
+            logW("prefs dump failed", t)
+        }
         if (prefs != null) {
             try {
                 prefs.registerOnSharedPreferenceChangeListener { p, _ ->
@@ -307,7 +312,6 @@ class ImmerseModule : XposedModule() {
      * "在容器内等比放下"的尺寸并居中 —— 画面完整，多余部分自然留出背景。
      */
     private fun startContainLoop() {
-        if (!config.containVideo) return
         mainHandler.removeCallbacks(containTick)
         mainHandler.postDelayed(containTick, 1200)
     }
@@ -315,10 +319,18 @@ class ImmerseModule : XposedModule() {
     private val containTick = object : Runnable {
         override fun run() {
             try {
-                fixContain()
+                if (config.containVideo) fixContain()
             } catch (_: Throwable) {
             }
-            if (config.containVideo) mainHandler.postDelayed(this, 150)
+            try {
+                if (config.skipAd) adTick()
+            } catch (_: Throwable) {
+            }
+            try {
+                lastDecor?.get()?.takeIf { it.isAttachedToWindow }?.let { immersiveTick(it) }
+            } catch (_: Throwable) {
+            }
+            mainHandler.postDelayed(this, 150)
         }
     }
 
@@ -488,6 +500,693 @@ class ImmerseModule : XposedModule() {
         }
         if (v is ViewGroup) {
             for (i in 0 until v.childCount) walkAll(v.getChildAt(i), loc, out)
+        }
+    }
+
+    // ------------------------------------------------------------------ 广告快进
+
+    /** 当前正在展示的「广告」标签（用来判断什么时候离开广告，好复位状态） */
+    @Volatile
+    private var adLabelRef: java.lang.ref.WeakReference<View>? = null
+
+    /** 已经识别过的广告标签（弱引用，避免持有被回收页面的视图） */
+    private val adHandled: MutableMap<View, Boolean> =
+        Collections.synchronizedMap(WeakHashMap<View, Boolean>())
+
+    /** 上次 seek 的时刻，避免 150ms 轮询里连发 */
+    @Volatile
+    private var lastAdSeekAt: Long = 0L
+
+    private val adSeekCount = AtomicInteger(0)
+
+    /** 广告相关日志预算（诊断用，避免刷屏） */
+    private val adLogBudget = AtomicInteger(120)
+
+    @Volatile
+    private var adLoopLogged = false
+
+    @Volatile
+    private var lastAdProbeAt = 0L
+
+    @Volatile
+    private var lastAdProbe = ""
+
+    @Volatile
+    private var playerProbedFor: java.lang.ref.WeakReference<View>? = null
+
+    /**
+     * 每个页面轮询一次：底部信息区里出现可见的「广告」标签 ⇒ 这是广告 ⇒ 快进到最后 0.5 秒。
+     *
+     * 判定依据见 [Targets.ID_AD_LABEL]：只有广告视频才会把那个 LinearLayout 设成 VISIBLE。
+     */
+    private fun adTick() {
+        val decor = lastDecor?.get() ?: return
+        if (!decor.isAttachedToWindow) return
+        if (!adLoopLogged) {
+            adLoopLogged = true
+            logAd("AD loop 启动 contain=${config.containVideo} skipAd=${config.skipAd}")
+        }
+        val container = findVisibleVideoFrame(decor) ?: return
+        playerProbe(container)
+        val label = findVisibleAdLabel(decor)
+        if (label == null) {
+            if (adLabelRef != null) {
+                adLabelRef = null
+                adHandled.clear()
+                logAd("AD leave：广告标签消失，状态复位")
+            }
+            return
+        }
+        adLabelRef = java.lang.ref.WeakReference(label)
+        val firstTime = adHandled.put(label, true) == null
+        if (firstTime) {
+            val loc = IntArray(2)
+            label.getLocationOnScreen(loc)
+            logAd(
+                "AD detect id=${hex(label.id)} class=${label.javaClass.name} " +
+                    "at=(${loc[0]},${loc[1]}) ${label.width}x${label.height} vis=${label.visibility}"
+            )
+            dumpAdDiag(label)
+        }
+        seekAdToEnd(container, firstTime)
+    }
+
+    /** 诊断：每个视频页只做一次播放器发现，把结果和耗时记下来 */
+    private fun playerProbe(container: View) {
+        if (playerProbedFor?.get() === container) return
+        playerProbedFor = java.lang.ref.WeakReference(container)
+        val t0 = android.os.SystemClock.uptimeMillis()
+        val p = findPlayer(container)
+        val dt = android.os.SystemClock.uptimeMillis() - t0
+        if (p == null) {
+            logAd("PLAYER probe：未找到播放器 (${dt}ms) container=${container.javaClass.simpleName}")
+        } else {
+            logAd(
+                "PLAYER probe：${p.javaClass.name} dur=${callLong(p, "getDuration")} " +
+                    "pos=${callLong(p, "getCurrentPosition")} playing=${callBoolean(p, "isPlaying")} (${dt}ms)"
+            )
+        }
+    }
+
+    /**
+     * 诊断：每秒扫一次整棵视图树里的「广告标签」id（**不看可见性**），
+     * 状态有变化就记一条日志。用来确认 id 是否对得上、以及广告/非广告时的可见性差异。
+     */
+    private fun adProbe(decor: View) {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - lastAdProbeAt < 1000L) return
+        lastAdProbeAt = now
+        val out = ArrayList<View>(4)
+        collectAnyById(decor, config.adLabelIds(), out)
+        val sb = StringBuilder()
+        for (v in out) {
+            val loc = IntArray(2)
+            v.getLocationOnScreen(loc)
+            sb.append("[id=").append(hex(v.id))
+                .append(" vis=").append(v.visibility)
+                .append(" shown=").append(v.isShown)
+                .append(" ").append(v.width).append('x').append(v.height)
+                .append(" at=").append(loc[0]).append(',').append(loc[1])
+                .append(" cls=").append(v.javaClass.simpleName)
+                .append(" kids=").append((v as? ViewGroup)?.childCount ?: -1)
+                .append("] ")
+        }
+        val s = if (sb.isEmpty()) "none" else sb.toString()
+        if (s != lastAdProbe) {
+            lastAdProbe = s
+            logAd("AD probe: $s")
+        }
+    }
+
+    /**
+     * 在 decorView 里找**可见**的广告标签。
+     * 页面会被 ViewPager 缓存，回收页里的标签可能还留着 VISIBLE，所以要求 isShown()。
+     */
+    private fun findVisibleAdLabel(decor: View): View? {
+        val ids = config.adLabelIds()
+        val out = ArrayList<View>(2)
+        collectAnyById(decor, ids, out)
+        for (v in out) {
+            if (v.isShown && v.width > 0 && v.height > 0) return v
+        }
+        return null
+    }
+
+    private fun collectAnyById(v: View, ids: IntArray, out: MutableList<View>) {
+        val id = v.id
+        for (i in ids.indices) {
+            if (ids[i] == id) {
+                out.add(v)
+                break
+            }
+        }
+        if (v is ViewGroup) {
+            for (i in 0 until v.childCount) collectAnyById(v.getChildAt(i), ids, out)
+        }
+    }
+
+    /** 把广告快进到「总时长 - 0.5s」。找不到播放器/时长未知时只记日志，不动播放。 */
+    private fun seekAdToEnd(container: View, firstTime: Boolean) {
+        val player = findPlayer(container)
+        if (player == null) {
+            if (firstTime || adLogBudget.getAndDecrement() > 0) {
+                logAd("AD 未找到播放器实例（container=${container.javaClass.simpleName}）")
+            }
+            return
+        }
+        val duration = callLong(player, "getDuration") ?: 0L
+        if (duration <= 0L) {
+            if (firstTime) logAd("AD player=${player.javaClass.name} duration=$duration（尚未就绪）")
+            return
+        }
+        val pos = callLong(player, "getCurrentPosition") ?: 0L
+        val target = (duration - ImmerseConfig.AD_TAIL_MS).coerceAtLeast(0L)
+        if (firstTime) {
+            logAd("AD player=${player.javaClass.name} dur=$duration pos=$pos target=$target")
+        }
+        // 已经在结尾附近就不重复 seek；若广告循环回开头（pos 变小）会自动再跳一次
+        if (pos >= target - 300L) return
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - lastAdSeekAt < 1200L) return
+        lastAdSeekAt = now
+        val ok = callSeekTo(player, target)
+        val n = adSeekCount.incrementAndGet()
+        logAd("AD seek #$n -> ${target}ms (dur=$duration pos=$pos) ok=$ok")
+    }
+
+    /** 诊断：把广告标签所在子树 dump 出来（只在 debugDumpTree 打开时） */
+    private fun dumpAdDiag(label: View) {
+        if (!config.debugDumpTree) return
+        val out = ArrayList<String>()
+        walkSubtree(label, 0, out)
+        logAd("AD tree root=${label.javaClass.name} lines=${out.size}")
+        for (l in out) logAd("AD   $l")
+    }
+
+    // ------------------------------------------------ 播放器实例发现（反射）
+
+    /** 快手播放器可能实现的接口（同名方法 seekTo/getDuration/getCurrentPosition 未被混淆） */
+    private val PLAYER_IFACES = arrayOf(
+        "com.kwai.framework.player.core.b",
+        "com.kwai.video.wayne.player.main.IWaynePlayer",
+        "com.kwai.video.wayne.player.main.IMediaPlayerApi",
+        "com.kwai.video.player.IMediaPlayer",
+        "com.kwai.video.player.IKwaiMediaPlayer",
+    )
+
+    /** 对象图遍历时不再深入的包前缀 */
+    private val SKIP_PREFIX = arrayOf(
+        "java.", "javax.", "kotlin.", "kotlinx.", "android.", "androidx.",
+        "dalvik.", "libcore.", "sun.", "com.android.internal.",
+    )
+
+    /**
+     * 找当前视频对应的播放器实例。
+     *
+     * 播放器藏在 PlayerKit 的私有字段里（`KwaiPlayerKitView.b/c` 是 Kotlin `Lazy`），
+     * 而类名/字段名都被混淆过，所以这里做两件事：
+     *  1) 走 `KwaiPlayerKitContext` 的服务定位器；
+     *  2) 从 `slide_playerkit_view` 出发做**有界**对象图遍历，找实现了播放器接口的对象。
+     *
+     * 接口名和 `seekTo` / `getDuration` / `getCurrentPosition` 这几个方法名都是稳定的
+     * （见 classes17.dex 的 `com.kwai.framework.player.core.b`）。
+     */
+    private fun findPlayer(container: View): Any? {
+        val start = findById(container, Targets.ID_SLIDE_PLAYERKIT_VIEW) ?: container
+        // 1) 服务定位器
+        try {
+            val ctx = start.javaClass.getMethod("getPlayerKitContext").invoke(start)
+            if (ctx != null) {
+                for (name in arrayOf("k", "f")) {
+                    for (iface in PLAYER_IFACES) {
+                        val cls = try {
+                            Class.forName(iface)
+                        } catch (_: Throwable) {
+                            null
+                        } ?: continue
+                        val o = try {
+                            ctx.javaClass.getMethod(name, Class::class.java).invoke(ctx, cls)
+                        } catch (_: Throwable) {
+                            null
+                        }
+                        if (o != null && isPlayer(o)) {
+                            if (adLogBudget.getAndDecrement() > 0) {
+                                logAd("AD player via ctx.$name($iface) -> ${o.javaClass.name}")
+                            }
+                            return o
+                        }
+                    }
+                }
+            }
+        } catch (_: Throwable) {
+        }
+        // 2) 有界对象图遍历
+        return bfsForPlayer(start)
+    }
+
+    private fun bfsForPlayer(start: Any): Any? {
+        val found = ArrayList<Any>(4)
+        val seen = java.util.IdentityHashMap<Any, Boolean>()
+        seen[start] = true
+        var level = ArrayList<Any>(1)
+        level.add(start)
+        for (depth in 0 until 6) {
+            val next = ArrayList<Any>(64)
+            for (o in level) {
+                if (isPlayer(o) && found.size < 4) found.add(o)
+                if (found.size >= 4) break
+                if (o is Collection<*>) {
+                    for (e in o) {
+                        val u = e ?: continue
+                        if (seen.put(u, true) != null) continue
+                        if (isPlayer(u)) {
+                            if (found.size < 4) found.add(u)
+                        } else if (!skippable(u)) {
+                            next.add(u)
+                        }
+                    }
+                    continue
+                }
+                if (o is Map<*, *>) {
+                    for (e in o.values) {
+                        val u = e ?: continue
+                        if (seen.put(u, true) != null) continue
+                        if (isPlayer(u)) {
+                            if (found.size < 4) found.add(u)
+                        } else if (!skippable(u)) {
+                            next.add(u)
+                        }
+                    }
+                    continue
+                }
+                for (f in fieldsOf(o.javaClass)) {
+                    val raw = try {
+                        f.isAccessible = true
+                        f.get(o)
+                    } catch (_: Throwable) {
+                        null
+                    } ?: continue
+                    val u = unwrapLazy(raw) ?: raw
+                    if (u === o) continue
+                    if (seen.put(u, true) != null) continue
+                    if (isPlayer(u)) {
+                        if (found.size < 4) found.add(u)
+                    } else if (!skippable(u)) {
+                        next.add(u)
+                    }
+                }
+                if (found.size >= 4) break
+            }
+            if (found.isNotEmpty() || next.isEmpty() || next.size > 2000) break
+            level = next
+        }
+        if (found.isEmpty()) return null
+        // 多个候选时选「时长最大、且正在播放」的那个（预加载播放器时长可能为 0）
+        var best: Any? = null
+        var bestScore = Long.MIN_VALUE
+        for (p in found) {
+            val d = callLong(p, "getDuration") ?: 0L
+            val playing = callBoolean(p, "isPlaying")
+            val score = d + if (playing) 1_000_000_000_000L else 0L
+            if (adLogBudget.getAndDecrement() > 0) {
+                logAd(
+                    "AD candidate ${p.javaClass.name} dur=$d pos=${callLong(p, "getCurrentPosition")} " +
+                        "playing=$playing"
+                )
+            }
+            if (score > bestScore) {
+                bestScore = score
+                best = p
+            }
+        }
+        return best
+    }
+
+    private fun fieldsOf(c: Class<*>): List<java.lang.reflect.Field> {
+        val out = ArrayList<java.lang.reflect.Field>(16)
+        var cur: Class<*>? = c
+        var guard = 0
+        while (cur != null && cur != Any::class.java && guard++ < 8) {
+            for (f in cur.declaredFields) {
+                if (java.lang.reflect.Modifier.isStatic(f.modifiers)) continue
+                if (f.type.isPrimitive) continue
+                out.add(f)
+            }
+            cur = cur.superclass
+        }
+        return out
+    }
+
+    /** Kotlin `Lazy`（快手里混淆成 `o3n/w`）—— 只在已初始化时取值，避免触发副作用 */
+    private fun unwrapLazy(o: Any): Any? {
+        val c = o.javaClass
+        return try {
+            val init = c.getMethod("isInitialized").invoke(o) as? Boolean ?: return null
+            if (!init) return null
+            c.getMethod("getValue").invoke(o)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun isPlayer(o: Any): Boolean {
+        if (o is View || o is String) return false
+        return implementsAny(o.javaClass, PLAYER_IFACES, 0)
+    }
+
+    private fun implementsAny(c: Class<*>, names: Array<String>, depth: Int): Boolean {
+        if (depth > 6) return false
+        for (n in names) if (n == c.name) return true
+        for (i in c.interfaces) if (implementsAny(i, names, depth + 1)) return true
+        val s = c.superclass ?: return false
+        return implementsAny(s, names, depth + 1)
+    }
+
+    /** 不进入这些对象的字段：系统/框架对象图太大，播放器不会藏在里面 */
+    private fun skippable(o: Any): Boolean {
+        if (o is View) return true
+        if (o is android.content.Context) return true
+        if (o is android.content.res.Resources) return true
+        val n = o.javaClass.name
+        for (p in SKIP_PREFIX) if (n.startsWith(p)) return true
+        return false
+    }
+
+    private fun callLong(o: Any, name: String): Long? = try {
+        (o.javaClass.getMethod(name).invoke(o) as? Number)?.toLong()
+    } catch (_: Throwable) {
+        null
+    }
+
+    private fun callBoolean(o: Any, name: String): Boolean = try {
+        (o.javaClass.getMethod(name).invoke(o) as? Boolean) ?: false
+    } catch (_: Throwable) {
+        false
+    }
+
+    private fun callSeekTo(o: Any, ms: Long): Boolean {
+        for (m in o.javaClass.methods) {
+            if (m.name != "seekTo") continue
+            val ps = m.parameterTypes
+            try {
+                m.isAccessible = true
+                when {
+                    ps.size == 1 && ps[0] == Long::class.javaPrimitiveType -> {
+                        m.invoke(o, ms)
+                        return true
+                    }
+                    ps.size == 2 && ps[1] == Long::class.javaPrimitiveType -> {
+                        m.invoke(o, 0, ms)
+                        return true
+                    }
+                }
+            } catch (_: Throwable) {
+            }
+        }
+        return false
+    }
+
+    private fun findById(root: View, id: Int): View? = try {
+        root.findViewById(id)
+    } catch (_: Throwable) {
+        null
+    }
+
+    private fun logAd(msg: String) {
+        if (adLogBudget.getAndDecrement() > -200) logI(msg)
+    }
+
+    // ---------------------------------------------------- 沉浸没生效 ⇒ 自动划走
+
+    /** 「没匹配上」从什么时候开始持续（0 = 当前是正常的） */
+    @Volatile
+    private var mismatchSince = 0L
+
+    @Volatile
+    private var lastSwipeAt = 0L
+
+    @Volatile
+    private var lastImmersiveReport = ""
+
+    @Volatile
+    private var lastImmersiveProbeAt = 0L
+
+    @Volatile
+    private var lastDumpedPage: java.lang.ref.WeakReference<View>? = null
+
+    @Volatile
+    private var lastMismatchNote = ""
+
+    /** 是否已经见过至少一个"生效"的视频页 —— 用来确认我们确实在信息流里 */
+    @Volatile
+    private var seenMatchedOnce = false
+
+    /** 上一次看到的视频画面纵向位置，用来判断页面是否已经停稳 */
+    @Volatile
+    private var lastFrameY = Int.MIN_VALUE
+
+    private val swipeCount = AtomicInteger(0)
+
+    /**
+     * 当前**可见页**上、且真的落在屏幕里的目标控件。
+     *
+     * ViewPager 会缓存前后各一页，那些回收页的 `isShown()` 仍然是 true，
+     * 所以必须再用屏幕坐标过滤一次，否则回收页上被压暗的右侧栏会让我们误判"这一页生效了"。
+     */
+    /**
+     * 当前**可见页**的根容器：从可见的视频画面往上找到 SlidePlayVerticalRelativeLayout。
+     * 这样就能把范围锁死在真正在播的那一页，不受回收页干扰。
+     */
+    private fun findPageRoot(decor: View): View? {
+        val frame = findVisibleVideoFrame(decor) ?: return null
+        var v: View? = frame
+        var guard = 0
+        while (v != null && guard++ < 24) {
+            if (v.id == Targets.ID_PAGE_ROOT) return v
+            if (v.javaClass.name == Targets.CLASS_PAGE_ROOT) return v
+            val p = v.parent
+            v = if (p is View) p else null
+        }
+        return null
+    }
+
+    /**
+     * 屏幕上真正看得见的目标控件。
+     *
+     * 判据只有一条：控件至少有一半落在屏幕里。
+     * ViewPager 会同时挂着前后各一页，那些回收页的 `isShown()` 依然是 true、
+     * alpha 也还是我们压过的 0.1，只有屏幕坐标能把它们区分出来。
+     */
+    private fun visibleTargets(decor: View): ArrayList<View> {
+        val screenH = decor.resources.displayMetrics.heightPixels
+        val found = ArrayList<View>(16)
+        collectAnyById(decor, config.targetIds(), found)
+        val out = ArrayList<View>(8)
+        val loc = IntArray(2)
+        for (v in found) {
+            if (!v.isShown || v.height <= 0) continue
+            v.getLocationOnScreen(loc)
+            val onScreen = minOf(loc[1] + v.height, screenH) - maxOf(loc[1], 0)
+            if (onScreen < v.height * 0.5f) continue
+            out.add(v)
+        }
+        return out
+    }
+
+    /** 诊断：把可见页里带 id 的控件打出来（每个视频页只打一次） */
+    private fun dumpPageOnce(decor: View) {
+        val page = findPageRoot(decor) ?: return
+        if (lastDumpedPage?.get() === page) return
+        lastDumpedPage = java.lang.ref.WeakReference(page)
+        val out = ArrayList<String>(256)
+        walkIds(page, out, 0)
+        logI("PAGEDUMP root=${page.javaClass.name} lines=${out.size}")
+        for (l in out) logI("PAGEDUMP $l")
+    }
+
+    private fun walkIds(v: View, out: MutableList<String>, depth: Int) {
+        if (out.size >= 300 || depth > 40) return
+        if (v.id != 0 || v is ViewGroup && v.childCount == 0) {
+            out.add(
+                "id=${hex(v.id)} a=${v.alpha} vis=${v.visibility} ${v.width}x${v.height} " +
+                    "d=$depth cls=${v.javaClass.name}"
+            )
+        }
+        if (v is ViewGroup) {
+            for (i in 0 until v.childCount) walkIds(v.getChildAt(i), out, depth + 1)
+        }
+    }
+
+    /**
+     * 判断当前这一页有没有「匹配上」：只要可见页上**有任意一个目标控件**
+     * 处于我们设定的透明度，就算生效。
+     *
+     * 广告页用的不是我们认得的那套右侧栏/底部信息区控件，所以这里会是 false。
+     */
+    private fun immersiveOk(decor: View): Boolean {
+        for (v in visibleTargets(decor)) {
+            if (v.alpha <= config.alpha + 0.05f) return true
+        }
+        return false
+    }
+
+    private fun immersiveTick(decor: View) {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - lastImmersiveProbeAt < 300L) return
+        lastImmersiveProbeAt = now
+
+        // 诊断：把「可见页」上的目标控件状态记下来（变化时才打）
+        if (config.debugDumpTree) try {
+            val vis = visibleTargets(decor)
+            val all = ArrayList<View>(16)
+            collectAnyById(decor, config.targetIds(), all)
+            val screenH = decor.resources.displayMetrics.heightPixels
+            val frame = findVisibleVideoFrame(decor)
+            val fl = IntArray(2)
+            val frameInfo = if (frame == null) "frame=null screen=$screenH" else {
+                frame.getLocationOnScreen(fl)
+                "frame=y${fl[1]}..${fl[1] + frame.height} screen=$screenH"
+            }
+            val page = findPageRoot(decor)
+            val pageInfo = if (page == null) "page=null" else "page=${hex(page.id)}/${page.javaClass.simpleName}"
+            val loc = IntArray(2)
+            val sb = StringBuilder()
+            for (v in vis) {
+                v.getLocationOnScreen(loc)
+                sb.append('[').append(hex(v.id))
+                    .append(" a=").append(v.alpha)
+                    .append(" y=").append(loc[1])
+                    .append(' ').append(v.width).append('x').append(v.height)
+                    .append(" cls=").append(v.javaClass.simpleName)
+                    .append("] ")
+            }
+            val s = if (sb.isEmpty()) "可见页上没有目标控件" else sb.toString()
+            val full = "$frameInfo $pageInfo | $s （可见页 ${vis.size} / 全树 ${all.size}）"
+            if (full != lastImmersiveReport) {
+                lastImmersiveReport = full
+                logI("MATCH: $full")
+            }
+        } catch (t: Throwable) {
+            logI("MATCH 诊断异常: $t")
+        }
+
+        if (config.debugDumpTree) try {
+            adProbe(decor)
+        } catch (_: Throwable) {
+        }
+        if (config.debugDumpTree) try {
+            dumpPageOnce(decor)
+        } catch (t: Throwable) {
+            logI("PAGEDUMP 异常: $t")
+        }
+
+        if (!config.autoSkipUnmatched) {
+            mismatchSince = 0L
+            return
+        }
+        if (immersiveOk(decor)) {
+            seenMatchedOnce = true
+            mismatchSince = 0L
+            noteBlock("")
+            return
+        }
+        // 只对"确实是一个整页视频"的页面动手，避免在消息/我等非视频页面乱滑。
+        // 注意：不能用播放器是否存在来判断 —— 广告页的播放器拿不到（findPlayer 返回 null），
+        // 那样反而会把广告页当成"不是视频页"而永远跳过。
+        try {
+            val frame = findVisibleVideoFrame(decor)
+            val screenH = decor.resources.displayMetrics.heightPixels
+            if (frame == null || frame.height < screenH * 0.2f) {
+                mismatchSince = 0L
+                noteBlock("没有整页视频画面")
+                return
+            }
+            if (!seenMatchedOnce) {
+                mismatchSince = 0L
+                noteBlock("还没见过生效的视频页")
+                return
+            }
+            // 页面正在滑动时不算数：翻页动画中间那几帧本来就"没有目标控件"，
+            // 不排掉的话会把正常视频也划走。
+            val fl = IntArray(2)
+            frame.getLocationOnScreen(fl)
+            if (lastFrameY == Int.MIN_VALUE || kotlin.math.abs(fl[1] - lastFrameY) > 8) {
+                lastFrameY = fl[1]
+                mismatchSince = 0L
+                noteBlock("页面还在滑动 (y=${fl[1]})")
+                return
+            }
+            noteBlock("")
+        } catch (t: Throwable) {
+            mismatchSince = 0L
+            noteBlock("异常 ${t.javaClass.name}: ${t.message}")
+            return
+        }
+
+        if (mismatchSince == 0L) {
+            mismatchSince = now
+            logI("UNMATCHED：这一页没有目标控件生效，观察 2s 后划走")
+            return
+        }
+        if (now - mismatchSince < 2000L) return
+        if (now - lastSwipeAt < 1500L) return
+        lastSwipeAt = now
+        mismatchSince = 0L
+        val n = swipeCount.incrementAndGet()
+        logI("UNMATCHED #$n：注入上滑手势翻页")
+        injectSwipeUp(decor)
+    }
+
+    /** 记录"为什么没划走"，只在原因变化时打一条，避免刷屏 */
+    private fun noteBlock(reason: String) {
+        if (reason == lastMismatchNote) return
+        lastMismatchNote = reason
+        if (reason.isEmpty()) {
+            logI("UNMATCHED 判定：已满足（开始计时）")
+        } else if (config.debugDumpTree) {
+            logI("UNMATCHED 跳过：$reason")
+        }
+    }
+
+    /**
+     * 往视图树里注入一个上滑手势，等价于用户手动上滑。
+     *
+     * 事件时间必须真实递进，否则宿主的 ViewPager 算不出滑动速度、翻不了页。
+     */
+    private fun injectSwipeUp(target: View) {
+        val w = target.width
+        val h = target.height
+        if (w <= 0 || h <= 0) return
+        val x = w / 2f
+        val y0 = h * 0.78f
+        val y1 = h * 0.22f
+        val steps = 10
+        val stepMs = 16L
+        val t0 = android.os.SystemClock.uptimeMillis()
+        val meta = 0
+        val down = android.view.MotionEvent.obtain(t0, t0, android.view.MotionEvent.ACTION_DOWN, x, y0, meta)
+        target.dispatchTouchEvent(down)
+        down.recycle()
+        for (i in 1..steps) {
+            val dt = stepMs * i
+            val y = y0 + (y1 - y0) * i / steps
+            mainHandler.postDelayed({
+                try {
+                    val mv = android.view.MotionEvent.obtain(
+                        t0, t0 + dt, android.view.MotionEvent.ACTION_MOVE, x, y, meta
+                    )
+                    target.dispatchTouchEvent(mv)
+                    mv.recycle()
+                    if (i == steps) {
+                        val up = android.view.MotionEvent.obtain(
+                            t0, t0 + dt + 8, android.view.MotionEvent.ACTION_UP, x, y1, meta
+                        )
+                        target.dispatchTouchEvent(up)
+                        up.recycle()
+                    }
+                } catch (_: Throwable) {
+                }
+            }, dt)
         }
     }
 

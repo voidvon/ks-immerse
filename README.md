@@ -21,6 +21,8 @@
 | 右上角红包 / 金币悬浮挂件 | 可拖动的红包金币挂件 |
 | 暂停时的「搜画面」固定到右上角 | 见下方「强制覆盖」 |
 | 视频完整显示（contain） | 见下方「把 cover 改成 contain」 |
+| 沉浸没生效的视频自动划走 | 见下方「判定"没生效"并自动划走」 |
+| 出现「广告」标签时快进到最后 0.5 秒 | **实验性，默认关闭**。检测本身已验证可靠（`slide_play_ad_label_container` 在普通视频里是 `GONE`、广告才 `VISIBLE`），但只覆盖带标签的那类广告 |
 
 > 全部处理都走 `alpha`，**从不调用 `setVisibility(GONE)`**，控件位置、点击、拖拽行为都不受影响。
 
@@ -163,6 +165,50 @@ val VIDEO_REF_IDS = intArrayOf(
 
 ---
 
+### 7. 判定「没生效」并自动划走
+
+广告页用的不是信息流那套右侧栏 / 底部信息区控件，透明度压不上去，沉浸效果出不来。
+与其去猜「什么样算广告」，不如直接判断**这一页到底有没有被压暗**：
+
+```
+屏幕上存在任意一个目标控件，且 alpha <= 设定值   →  这一页生效
+否则持续 2 秒                                    →  注入上滑手势翻到下一个
+```
+
+这条路踩了两个坑，都记在代码注释里：
+
+**坑 1：回收页会骗过可见性判断。**
+ViewPager 同时挂着前后各一页，那些回收页的 `isShown()` 依然是 `true`、
+alpha 也还是我们压过的 `0.1`。只看 `isShown()` 的话，一个广告页会因为它**邻居**被压暗而
+被判定成「生效」。所以判据必须落到屏幕坐标：
+
+```kotlin
+// 控件至少一半落在屏幕里，才算"这一页的"
+val onScreen = minOf(loc[1] + v.height, screenH) - maxOf(loc[1], 0)
+if (onScreen < v.height * 0.5f) continue
+```
+
+> 中途试过按「页根容器」（`SlidePlayVerticalRelativeLayout`）收敛范围，
+> 结果那个容器是**跨页共享**的祖先，反而把邻居页的目标控件又收了进来 —— 已回退。
+
+**坑 2：不能用播放器是否存在当守卫。**
+广告页上 `findPlayer()` 拿不到播放器（返回 `null`），如果拿它当「是不是视频页」的守卫，
+广告页就会被当成非视频页**永远跳过**。改成用视频画面矩形判断：
+
+```kotlin
+if (frame == null || frame.height < screenH * 0.2f) return   // 不是整页视频
+```
+
+另外两处防误判：
+
+* 翻页动画中间那几帧本来就没有目标控件，所以要求画面**停稳**（纵向位置 2 帧内不变）才开始计时；
+* 必须先见过至少一个「生效」的视频页，确认自己确实在信息流里。
+
+划走用合成 `MotionEvent` 注入（`DOWN` → 10 步 `MOVE` → `UP`，事件时间按 16ms 真实递进）——
+时间不递进的话宿主的 ViewPager 算不出滑动速度，翻不了页。
+
+---
+
 ## 代码结构
 
 ```
@@ -224,9 +270,29 @@ cd _recon && unzip -o base.apk 'classes*.dex' -d dex/
 
 ## 已知未覆盖
 
-* 广告 / 直播视频用的是另一套底部浮层（`@xxx +关注` / `新鲜采摘玉米好好吃` 那块），暂未处理；
+* 广告 / 直播视频用的是另一套底部浮层（`@xxx +关注` / `新鲜采摘玉米好好吃` 那块），暂未处理
+  —— 这类页面会被「沉浸没生效的视频自动划走」直接跳掉；
 * 只按 `14.7.10.11757` 适配。换版本若控件 id 变化，改 `Targets.kt` 即可
   （开着 `debug_dump_tree` 能看到带 id、坐标、父类、LayoutParams 的完整视图树）。
+
+### 设置界面读不到的问题
+
+本机实测 `getRemotePreferences("ks_immerse")` 返回的对象 **`keys=[]`**（空），
+所以宿主进程里所有开关都落在代码默认值上 —— 设置界面改了不生效。
+
+模块侧代码是对的，问题出在 Vector 的 remote preferences 镜像没被填充
+（`/data/misc/<uuid>/prefs/` 下没有本模块的文件，即使已在 `AndroidManifest.xml` 里声明
+`<meta-data android:name="xposedsharedprefs" android:value="true"/>`、重装 APK、
+并用 `vector-cli modules disable/enable` 重新加载过）。
+
+排查时可以用这条日志确认当前进程实际拿到的值：
+
+```
+KSImmerse: prefs group=ks_immerse null=false keys=[]
+KSImmerse: hooks installed, ... enabled=true alpha=0.1 ... autoSkipUnmatched=true
+```
+
+**在修好之前，要改行为只能改 `ImmerseConfig.kt` 里的默认值然后重新编译安装。**
 
 ---
 

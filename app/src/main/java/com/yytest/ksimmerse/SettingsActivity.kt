@@ -26,6 +26,8 @@ class SettingsActivity : Activity() {
     private lateinit var cbPendant: CheckBox
     private lateinit var cbPinSearch: CheckBox
     private lateinit var cbContainVideo: CheckBox
+    private lateinit var cbSkipAd: CheckBox
+    private lateinit var cbAutoSkip: CheckBox
 
     /** 初始化控件时避免把默认值当成用户修改写回去 */
     private var restoring = false
@@ -45,6 +47,8 @@ class SettingsActivity : Activity() {
         cbPendant = findViewById(R.id.cb_pendant)
         cbPinSearch = findViewById(R.id.cb_pin_search)
         cbContainVideo = findViewById(R.id.cb_contain_video)
+        cbSkipAd = findViewById(R.id.cb_skip_ad)
+        cbAutoSkip = findViewById(R.id.cb_auto_skip)
 
         restoring = true
         swEnabled.isChecked = prefs.getBoolean(ImmerseConfig.KEY_ENABLED, true)
@@ -57,6 +61,8 @@ class SettingsActivity : Activity() {
         cbPendant.isChecked = prefs.getBoolean(ImmerseConfig.KEY_PENDANT, true)
         cbPinSearch.isChecked = prefs.getBoolean(ImmerseConfig.KEY_PIN_SEARCH, true)
         cbContainVideo.isChecked = prefs.getBoolean(ImmerseConfig.KEY_CONTAIN_VIDEO, true)
+        cbSkipAd.isChecked = prefs.getBoolean(ImmerseConfig.KEY_SKIP_AD, false)
+        cbAutoSkip.isChecked = prefs.getBoolean(ImmerseConfig.KEY_AUTO_SKIP_UNMATCHED, true)
         restoring = false
         renderAlpha()
 
@@ -68,6 +74,8 @@ class SettingsActivity : Activity() {
         cbPendant.setOnCheckedChangeListener { _, _ -> persist() }
         cbPinSearch.setOnCheckedChangeListener { _, _ -> persist() }
         cbContainVideo.setOnCheckedChangeListener { _, _ -> persist() }
+        cbSkipAd.setOnCheckedChangeListener { _, _ -> persist() }
+        cbAutoSkip.setOnCheckedChangeListener { _, _ -> persist() }
 
         seekAlpha.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(bar: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -97,6 +105,8 @@ class SettingsActivity : Activity() {
             .putBoolean(ImmerseConfig.KEY_PENDANT, cbPendant.isChecked)
             .putBoolean(ImmerseConfig.KEY_PIN_SEARCH, cbPinSearch.isChecked)
             .putBoolean(ImmerseConfig.KEY_CONTAIN_VIDEO, cbContainVideo.isChecked)
+            .putBoolean(ImmerseConfig.KEY_SKIP_AD, cbSkipAd.isChecked)
+            .putBoolean(ImmerseConfig.KEY_AUTO_SKIP_UNMATCHED, cbAutoSkip.isChecked)
             .apply()
     }
 }

@@ -16,6 +16,8 @@
     <string name="label_pendant">右上角红包 / 金币悬浮挂件</string>
     <string name="label_pin_search">暂停时的「搜画面」固定到右上角</string>
     <string name="label_contain_video">视频完整显示（contain，不裁切左右）</string>
+    <string name="label_skip_ad">出现「广告」标签时，快进到最后 0.5 秒</string>
+    <string name="label_auto_skip_unmatched">沉浸没生效的视频自动划走（右侧栏没被压暗的，多半是广告）</string>
 
     <string name="section_hint">说明</string>
     <string name="hint_enable_module">1. 需要在 Vector 管理器中启用本模块，作用域勾选「快手极速版」。</string>

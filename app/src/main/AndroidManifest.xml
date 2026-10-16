@@ -10,6 +10,11 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.KSImmerse">
 
+        <!-- LSPosed/Vector：允许被注入的宿主进程通过 getRemotePreferences 读到本模块的设置 -->
+        <meta-data
+            android:name="xposedsharedprefs"
+            android:value="true" />
+
         <activity
             android:name=".SettingsActivity"
             android:exported="true"

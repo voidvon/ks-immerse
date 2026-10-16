@@ -115,7 +115,48 @@ object Targets {
     const val ID_TEXTURE_VIEW_FRAME = 0x7f091dff
     const val ID_SLIDE_PLAYERKIT_VIEW = 0x7f091bca
     const val ID_PLAYER = 0x7f0915db
+
+    /**
+     * 信息流里**单个视频页**的根容器。
+     *
+     * ViewPager 会同时挂 3 个这样的页面（当前页 + 前后各一页的回收页），
+     * 回收页里的控件 `isShown()` 依然是 true，所以判断"这一页到底有没有生效"
+     * 必须先把范围收敛到可见页，否则会被回收页上的目标控件骗过去。
+     */
+    const val ID_PAGE_ROOT = 0x7f091264
+    const val CLASS_PAGE_ROOT = "com.kwai.library.slide.base.widget.SlidePlayVerticalRelativeLayout"
+
     val VIDEO_REF_IDS = intArrayOf(ID_TEXTURE_VIEW_FRAME, ID_SLIDE_PLAYERKIT_VIEW, ID_PLAYER)
+
+    // ------------------------------------------------------------------ 广告标签
+
+    /**
+     * 视频广告的「广告」小标签容器。
+     *
+     * 实测依据（classes3.dex）：
+     * `com.yxcorp.gifshow.ad.detail.presenter.ad.label.thanos.a`（即
+     * `ThanosAdMutableLabelPresenter` 家族）的 `doBindView()` 里
+     * `findViewById(0x7f091b68)` 拿到一个 **LinearLayout** 存进字段 `g`；
+     * `onBind()` 里只有 `PhotoAdvertisement.AdData.ExtraDisplayInfo.mTagInfoList`
+     * 非空时才 `setVisibility(VISIBLE)` 并往里塞标签控件（`f4d/a.a(ViewGroup)`）。
+     *
+     * 也就是说：**这个容器可见 == 当前视频是广告**；
+     * 普通视频里这个 presenter 根本不会被创建，容器保持布局里的 GONE。
+     * 它和「搜画面」气泡一样是 a11y 不可见的（uiautomator 里会被跳过），
+     * 所以只能进程内按 id 找。
+     */
+    const val NAME_AD_LABEL = "slide_play_ad_label_container"
+    const val ID_AD_LABEL = 0x7f091b68
+
+    /** 左下角广告标签（部分广告样式用它） */
+    const val NAME_AD_LABEL_LEFT = "icon_left_bottom_ad_label"
+    const val ID_AD_LABEL_LEFT = 0x7f090cc5
+
+    /** 「广告标签」分组：命中任意一个且可见即判定为广告 */
+    val AD_LABEL = arrayOf(
+        NAME_AD_LABEL to ID_AD_LABEL,
+        NAME_AD_LABEL_LEFT to ID_AD_LABEL_LEFT,
+    )
 
     // ------------------------------------------------------------------ 悬浮挂件
 
