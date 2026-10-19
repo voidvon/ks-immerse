@@ -95,39 +95,68 @@ FrameLayout(270x270) > UnionView > TKViewContainer > TKYogaLayout > TKAndroidCan
 ```
 FrameLayout id=texture_view_frame      1080x2157   <- 容器
   <Player>KitView    id=slide_playerkit_view
-    PlayerKitContentFrame              1213x2157   <- 播放器按视频真实比例定尺寸
+    PlayerKitContentFrame              1213x2157
       SurfaceView                      1213x2157   <- 比容器宽 133px，两侧被容器裁掉
 ```
 
-**关键点：`SurfaceView` 的尺寸不等于视频比例**——它是被 cover 撑大的。
-真正可靠的原生比例来源是它的**父层 `PlayerKitContentFrame`**：播放器按视频真实比例给它定尺寸，
-而且不会因为我们改子 View 而变化。
+做法就是用户说的那句话：**量出 x 轴被裁掉多少，再等比缩回去。**
+`SurfaceView` 的宽高比就等于视频比例（播放器是把它撑到 cover 尺寸，
+裁切由外层容器负责），所以
 
-于是把 `SurfaceView` 的 `LayoutParams` 设成"按父层比例在容器内放得下"的尺寸并居中：
+```
+scale = min(容器宽 / SurfaceView 宽, 容器高 / SurfaceView 高)
+目标   = (SurfaceView 宽 * scale, SurfaceView 高 * scale)
+```
+
+`1213x2157` → `scale = 1080/1213 = 0.8903` → `1080x1920`，正好是完整画面。
+
+#### 但比例不能从 View 尺寸猜 —— 要直接问播放器
+
+一开始是按上面那套纯几何写的，结果**有些视频不生效**。原因是几何来源都不可靠：
+
+* `PlayerKitContentFrame` **有时候正好等于容器尺寸**（此时 `vAspect == cAspect`，
+  看起来"不需要裁切"），于是被误判成不用处理；
+* `SurfaceView` 自己的尺寸会被**我们上一次写进去的值**污染 ——
+  ViewPager 会把同一个 `SurfaceView` 实例复用给下一个视频，
+  于是 16:9 的视频被塞进上一轮留下的 `1080x1920` 里 → **纵向拉伸**，
+  这就是"比例错误 / 看起来很生硬"的来源。
+
+所以现在**直接问播放器要真实宽高**（这两个接口没有被混淆，
+在播放器的两个核心接口上都有：`com.kwai.*` 那两个 `IMediaPlayer` / `IMediaPlayerApi`）：
+
+```java
+player.getVideoWidth()   // -> I
+player.getVideoHeight()  // -> I
+```
+
+拿到 `vAspect` 之后按"等比缩到刚好放得下"算目标：
 
 ```kotlin
-val sp = surface.parent as View                 // PlayerKitContentFrame = 视频原生尺寸
-val vAspect = sp.width / sp.height.toDouble()
-val cAspect = container.width / container.height.toDouble()
-if (vAspect > cAspect) {                        // 视频比容器宽 => 左右被裁切
-    target = container.width to round(container.width / vAspect)
-} else {
-    target = sp.width to sp.height              // 原生尺寸，等价 MATCH_PARENT
+if (vAspect > cAspect) {        // 视频比容器宽 → cover 裁的是左右
+    target = cW to round(cW / vAspect)
+} else {                        // 视频比容器高 → cover 裁的是上下
+    target = round(cH * vAspect) to cH
 }
 ```
 
-#### 两个必须遵守的约束
+顺带修掉了旧版的两个毛病：视频比容器**高**的情况以前是"原样不动"（于是上下被裁），
+现在会正确留出上下黑边。
 
-1. **比例来源只能用父层，绝不能用 `SurfaceView` 自己。**
-   `SurfaceView` 一旦被我们设过显式尺寸，这个值会**跟着 SurfaceView 实例复用给下一个视频**
-   （ViewPager 复用页面），于是 16:9 的视频被塞进上一轮留下的 `1080x1920` 里 → **纵向拉伸**。
-   父层尺寸不受影响，所以按父层重算天然是无状态、幂等的。
+**退路：** 拿不到播放器尺寸时（广告页 `findPlayer` 返回 null、或还没 prepare），
+才回退到上面那套纯几何测量；并且"装得下就什么都不做"，
+所以不会和自己上一轮写进去的尺寸互相打架。
 
-2. **只处理"视频比容器宽"（左右裁切）。**
-   视频比容器**高**的情况（图文帖、小窗预览）是目标应用自己的版式，
-   硬按 contain 缩会把画面变成一条窄柱，所以那种情况目标就是原生尺寸、原样不动。
+日志每个视频一条（按视频尺寸 + 容器去重，不能只按容器去重 —— 容器会被复用）：
 
-改动只在尺寸变化时执行一次，稳定后不再触发（轮询 150ms 兜底）。
+```
+CONTAIN 1213x2157 -> 1080x1920 container=1080x2157 video=576x1024(0.5625) cAspect=0.5007 cover裁掉 x=133px y=0px
+CONTAIN 1080x607  -> 1080x608  container=1080x809  video=1024x576(1.7778) cAspect=1.3350 cover裁掉 x=358px y=0px
+```
+
+真机核对过：9:16 的视频在 `1080x2157` 容器里留出上下各 118px 黑边
+（`(2157-1920)/2`），和算出来的完全一致；4:3 的视频黑边明显变大，也没有拉伸。
+
+关掉这个开关时会把尺寸交回播放器（`LayoutParams` 设回 `MATCH_PARENT`），恢复原生 cover。
 
 ### 6. 「搜画面」按钮：必须每帧强制覆盖
 

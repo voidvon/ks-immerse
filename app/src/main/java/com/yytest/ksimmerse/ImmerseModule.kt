@@ -60,7 +60,6 @@ class ImmerseModule : XposedModule() {
     private var lastDecor: java.lang.ref.WeakReference<View>? = null
 
     /** contain 修正次数（诊断用） */
-    private val containFixes = java.util.concurrent.atomic.AtomicInteger(0)
 
     /** 固定位置的诊断日志预算 */
     private val pinLogBudget = java.util.concurrent.atomic.AtomicInteger(40)
@@ -493,6 +492,15 @@ class ImmerseModule : XposedModule() {
         }
     }
 
+    /**
+     * 把视频从 cover 改成 contain（完整显示，不裁切）。
+     *
+     * 比例**必须**问播放器要（`getVideoWidth/getVideoHeight`），不能从 View 尺寸猜：
+     * `PlayerKitContentFrame` 有时候正好等于容器尺寸（= 看起来"不需要裁切"），
+     * `SurfaceView` 自己的尺寸又会被我们上次写进去的值污染。
+     * 旧版本就是拿 `PlayerKitContentFrame` 当"原生比例"，所以会误判成不用处理 ——
+     * 表现就是「有些视频不生效」。
+     */
     private fun fixContain() {
         val decor = lastDecor?.get() ?: return
         if (!decor.isAttachedToWindow) return
@@ -501,54 +509,133 @@ class ImmerseModule : XposedModule() {
         val cH = container.height
         if (cW <= 0 || cH <= 0) return
         val surface = findSurface(container) ?: return
+        val lp = surface.layoutParams ?: return
 
-        // 视频的"原生比例"取自 SurfaceView 的父层 PlayerKitContentFrame：
-        // 播放器按视频真实比例给它定尺寸，而且不会因为我们改子 View 而变 —— 这是唯一可靠的来源。
-        // （绝对不能用 SurfaceView 自己的尺寸：那是被 cover 撑大过的，而且会被我们上次改的值污染。）
-        val sp = surface.parent as? View
-        val native = sp != null && sp.width > 0 && sp.height > 0
-        val vw = if (native) sp!!.width else surface.width
-        val vh = if (native) sp!!.height else surface.height
-        if (vw <= 0 || vh <= 0) return
-
-        val vAspect = vw.toDouble() / vh
-        val cAspect = cW.toDouble() / cH
-
-        // 只有"视频比容器宽"（= 左右被裁切）才需要收窄；
-        // 其余情况目标就是原生尺寸，等价于 MATCH_PARENT —— 顺便把之前留下的显式尺寸清掉。
         val targetW: Int
         val targetH: Int
+        // 被 cover 裁掉多少（只用来打日志，方便对照"到底裁了多少"）
+        var cropX = 0
+        var cropY = 0
         if (!config.containVideo) {
-            // 设置里关掉了 contain —— 主动恢复成"铺满容器"（= 原生 cover 行为），
-            // 不然会一直保持着我们上次改小的尺寸。
-            targetW = cW
-            targetH = cH
-        } else if (vAspect > cAspect) {
-            targetW = cW
-            targetH = Math.round(cW / vAspect).toInt()
+            // 关掉 contain —— 把尺寸还给播放器，恢复原生 cover
+            if (lp.width == ViewGroup.LayoutParams.MATCH_PARENT &&
+                lp.height == ViewGroup.LayoutParams.MATCH_PARENT
+            ) {
+                return
+            }
+            targetW = ViewGroup.LayoutParams.MATCH_PARENT
+            targetH = ViewGroup.LayoutParams.MATCH_PARENT
         } else {
-            targetW = vw
-            targetH = vh
-        }
-        if (targetW <= 0 || targetH <= 0) return
+            val sw = surface.width
+            val sh = surface.height
+            if (sw <= 0 || sh <= 0) return
+            // 播放器还没报出尺寸（未 prepare / 广告页）就先别动，
+            // 拿错的比例硬压会把画面弄歪
+            val vs = videoSize(container)
+            if (vs != null) {
+                val vAspect = vs[0].toDouble() / vs[1]
+                val cAspect = cW.toDouble() / cH
 
-        val lp = surface.layoutParams
-        if (lp != null && lp.width == targetW && lp.height == targetH) return
+                // 等比例缩到刚好放得下：cover 裁掉多少，就缩回来多少。
+                //   vAspect > cAspect：视频比容器"宽" → cover 裁的是左右 → 高度缩到 cW/vAspect
+                //   否则：视频比容器"高" → cover 裁的是上下 → 宽度缩到 cH*vAspect
+                if (vAspect > cAspect) {
+                    targetW = cW
+                    targetH = Math.round(cW / vAspect).toInt()
+                    cropX = Math.round(cH * vAspect).toInt() - cW
+                } else {
+                    targetW = Math.round(cH * vAspect).toInt()
+                    targetH = cH
+                    cropY = Math.round(cW / vAspect).toInt() - cH
+                }
+            } else {
+                // 退路：拿不到播放器尺寸时，直接量「SurfaceView 比容器大出来多少」，
+                // 再等比缩回去 —— 纯几何做法，对广告页这种 findPlayer 拿不到的情况也管用。
+                // 装得下就什么都不做，所以不会和我们自己上一次写进去的尺寸打架。
+                if (sw <= cW && sh <= cH) return
+                val scale = minOf(cW.toDouble() / sw, cH.toDouble() / sh)
+                targetW = Math.round(sw * scale).toInt()
+                targetH = Math.round(sh * scale).toInt()
+                cropX = sw - targetW
+                cropY = sh - targetH
+            }
+            if (targetW <= 0 || targetH <= 0) return
+            if (lp.width == targetW && lp.height == targetH) return
+        }
+
+        val before = "${surface.width}x${surface.height}"
         val flp = lp as? android.widget.FrameLayout.LayoutParams
             ?: android.widget.FrameLayout.LayoutParams(targetW, targetH)
-        val before = "${surface.width}x${surface.height}"
         flp.width = targetW
         flp.height = targetH
         flp.gravity = android.view.Gravity.CENTER
         surface.layoutParams = flp
 
-        val n = containFixes.incrementAndGet()
-        if (n <= 5) {
+        // 日志压到「每个视频一条」：按视频尺寸去重（不能按容器去重 ——
+        // ViewPager 会把同一个容器复用给下一个视频，那样只会打出第一条）
+        val logKey = containVw * 100000 + containVh
+        if (logKey != lastContainLogged || container !== lastContainContainer) {
+            lastContainLogged = logKey
+            lastContainContainer = container
+            val vInfo = when {
+                !config.containVideo -> "contain=off（已交回播放器）"
+                containVw > 0 ->
+                    "video=${containVw}x${containVh}(${"%.4f".format(containVw.toDouble() / containVh)})"
+                else -> "video=?（退化成几何测量）"
+            }
             logI(
-                "CONTAIN $before -> ${targetW}x${targetH} container=${cW}x$cH " +
-                    "native=${vw}x$vh(${"%.4f".format(vAspect)}) cAspect=${"%.4f".format(cAspect)}"
+                "CONTAIN $before -> ${targetW}x${targetH} container=${cW}x$cH $vInfo " +
+                    "cAspect=${"%.4f".format(cW.toDouble() / cH)} " +
+                    "cover裁掉 x=${cropX}px y=${cropY}px"
             )
         }
+    }
+
+    /** 上一次打过 CONTAIN 日志的视频尺寸 / 容器，用来把日志压到「每个视频一条」 */
+    private var lastContainLogged = 0
+    private var lastContainContainer: View? = null
+
+    private var containPageId = 0
+    private var containProbeAt = 0L
+    private var containVw = 0
+    private var containVh = 0
+
+    /**
+     * 当前视频的**真实**宽高，直接问播放器。
+     *
+     * 换页会清缓存；播放器没 prepare 时返回 0 → 返回 null（这帧先不处理）。
+     * 同一页 3 秒内不重复探测，免得每 150ms 都去遍历一次对象图。
+     */
+    private fun videoSize(container: View): IntArray? {
+        val fid = System.identityHashCode(container)
+        val now = SystemClock.uptimeMillis()
+        if (fid != containPageId) {
+            containPageId = fid
+            containVw = 0
+            containVh = 0
+        }
+        if (containVw > 0 && now - containProbeAt < 3000L) {
+            return intArrayOf(containVw, containVh)
+        }
+        if (now - containProbeAt < 500L) return null
+        containProbeAt = now
+        val p = try {
+            findPlayer(container)
+        } catch (_: Throwable) {
+            null
+        } ?: return null
+        val w = callInt(p, "getVideoWidth") ?: return null
+        val h = callInt(p, "getVideoHeight") ?: return null
+        if (w <= 0 || h <= 0) return null
+        containVw = w
+        containVh = h
+        return intArrayOf(w, h)
+    }
+
+    private fun callInt(o: Any, name: String): Int? = try {
+        (o.javaClass.getMethod(name).invoke(o) as? Number)?.toInt()
+    } catch (_: Throwable) {
+        null
     }
 
     /**
