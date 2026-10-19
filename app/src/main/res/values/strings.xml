@@ -18,9 +18,10 @@
     <string name="label_contain_video">视频完整显示（contain，不裁切左右）</string>
     <string name="label_skip_ad">出现「广告」标签时，快进到最后 0.5 秒</string>
     <string name="label_auto_skip_unmatched">沉浸没生效的视频自动划走（右侧栏没被压暗的，多半是广告）</string>
+    <string name="label_kill_double_tap">去掉双击点赞，单击立刻暂停/继续</string>
 
     <string name="section_hint">说明</string>
     <string name="hint_enable_module">1. 需要在 Vector 管理器中启用本模块，作用域勾选「快手极速版」。</string>
-    <string name="hint_restart">2. 修改设置后请重启（强行停止）快手极速版，让新的控件重新创建。</string>
+    <string name="hint_restart">2. 设置改完立刻生效，不用重启快手极速版。</string>
     <string name="hint_scope">3. 仅在 com.kuaishou.nebula（快手极速版）14.7.10.11757 上验证通过，其他版本可能因控件 id 变化需要重新适配。</string>
 </resources>

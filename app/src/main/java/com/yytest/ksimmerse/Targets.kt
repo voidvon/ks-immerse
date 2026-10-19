@@ -126,6 +126,17 @@ object Targets {
     const val ID_PAGE_ROOT = 0x7f091264
     const val CLASS_PAGE_ROOT = "com.kwai.library.slide.base.widget.SlidePlayVerticalRelativeLayout"
 
+/**
+ * 首页播放器的手势层。单击（暂停）/ 双击（点赞）都在这里分发：
+ * `onSingleTapUp` 里自己实现了一套"是不是双击"的判定，
+ * 分发方法分别是 `d(MotionEvent,boolean)`（单击）和 `b(MotionEvent,boolean,int)`（双击）。
+ * 内部 trace 方法是 `e(String)`，打出来就是 onSingleTapUp / dispatchDoubleTap N。
+ */
+/** 视频区域真正收触摸的那一层 */
+const val CLASS_TOUCH_LAYOUT = "com.kwai.library.slide.base.widget.SlidePlayVerticalTouchLayout"
+
+const val CLASS_GESTURE_VIEW = "com.kwai.feed.player.ui.GestureView"
+
     val VIDEO_REF_IDS = intArrayOf(ID_TEXTURE_VIEW_FRAME, ID_SLIDE_PLAYERKIT_VIEW, ID_PLAYER)
 
     // ------------------------------------------------------------------ 浮层

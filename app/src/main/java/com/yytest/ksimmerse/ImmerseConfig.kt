@@ -28,6 +28,7 @@ class ImmerseConfig {
         const val KEY_SKIP_AD = "skip_ad"
         const val KEY_AUTO_SKIP_UNMATCHED = "auto_skip_unmatched"
         const val KEY_DEBUG_DUMP = "debug_dump_tree"
+        const val KEY_KILL_DOUBLE_TAP = "kill_double_tap"
 
         /** 需求：右侧栏与底部信息区改为 0.1 透明度，保留可点击 */
         const val DEFAULT_ALPHA = 0.1f
@@ -90,6 +91,17 @@ class ImmerseConfig {
     var debugDumpTree: Boolean = true
         private set
 
+    /**
+     * 接管视频区域的单击：去掉双击点赞，并让单击立刻生效。
+     *
+     * 宿主把单击（暂停）和双击（点赞）做在同一套自定义手势里，
+     * 实测单击按下后要 309ms 才真的 pause —— 就是在等"会不会来第二下"。
+     * 打开后由模块自己吃掉点击，单击立刻切播放/暂停，第二下直接丢弃。
+     */
+    @Volatile
+    var killDoubleTap: Boolean = true
+        private set
+
     // 各分组当前使用的 id（可被运行时按名解析替换）
     @Volatile
     private var rightIds: IntArray = idsOf(Targets.RIGHT_COLUMN)
@@ -139,6 +151,7 @@ class ImmerseConfig {
         skipAd = bool(get(KEY_SKIP_AD), false)
         autoSkipUnmatched = bool(get(KEY_AUTO_SKIP_UNMATCHED), true)
         debugDumpTree = bool(get(KEY_DEBUG_DUMP), false)
+        killDoubleTap = bool(get(KEY_KILL_DOUBLE_TAP), true)
         rebuild()
     }
 
@@ -309,6 +322,7 @@ class ImmerseConfig {
         append(" skipAd=").append(skipAd)
         append(" autoSkipUnmatched=").append(autoSkipUnmatched)
         append(" debug=").append(debugDumpTree)
+        append(" killDoubleTap=").append(killDoubleTap)
         append(" adLabel=").append(adLabelIds.joinToString(",") { hex(it) })
     }
 

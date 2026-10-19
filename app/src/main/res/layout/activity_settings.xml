@@ -119,6 +119,13 @@
             android:text="@string/label_skip_ad" />
 
         <CheckBox
+            android:id="@+id/cb_kill_double_tap"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="48dp"
+            android:text="@string/label_kill_double_tap" />
+
+        <CheckBox
             android:id="@+id/cb_pin_search"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

@@ -22,6 +22,7 @@
 | 暂停时的「搜画面」固定到右上角 | 见下方「强制覆盖」 |
 | 视频完整显示（contain） | 见下方「把 cover 改成 contain」 |
 | 沉浸没生效的视频自动划走 | 见下方「判定"没生效"并自动划走」 |
+| 去掉双击点赞，单击立刻暂停/继续 | 见下方「接管视频区域的点击」 |
 | 出现「广告」标签时快进到最后 0.5 秒 | **实验性，默认关闭**。检测本身已验证可靠（`slide_play_ad_label_container` 在普通视频里是 `GONE`、广告才 `VISIBLE`），但只覆盖带标签的那类广告 |
 
 > 全部处理都走 `alpha`，**从不调用 `setVisibility(GONE)`**，控件位置、点击、拖拽行为都不受影响。
@@ -265,6 +266,49 @@ if (frame == null || frame.height < screenH * 0.2f) return   // 不是整页视�
 
 ---
 
+### 8. 接管视频区域的点击：去掉双击点赞，并让单击立刻生效
+
+宿主的单击（暂停）和双击（点赞）做在同一套**自定义**手势里，不在
+`android.view.GestureDetector` 上（hook 了 `GestureDetector` 的构造 +
+`setOnTouchListener`，只看到性能监控和 ViewPager 的滚动监听，没有 feed 的手势监听）。
+
+用 `View#onTouchEvent` 按运行时类名过滤，抓到了视频区域的触摸层是
+滑动库里的 `SlidePlayVerticalTouchLayout`。
+再把播放器的 `pause()` 一起 hook，量出了单击的真实时序：
+
+```
+TOUCH DOWN t=97898586
+PLAYER pause() t=97898895     // +309ms
+```
+
+**那 309ms 就是在等「会不会来第二下」**，和用户体感一致。
+
+所以直接把这套手势**接管**掉：`ACTION_DOWN/MOVE/UP` 全部自己处理并返回 `true`
+（宿主看不到这次触摸 → 没有等待、也不会点赞），`ACTION_UP` 时立刻调播放器
+`pause()` / `start()`：
+
+```
+单击 → TAP -> pause ok=true      // 按下即生效，没有等待
+```
+
+几个坑：
+
+* **关掉开关时必须 `chain.proceed()` 把事件放回去。** 返回 `true` 等于替宿主把触摸吃掉了，
+  宿主的单击/双击/滑动会全部失效 —— 这个 bug 一开始就踩了。
+* **不能拿 `isPlaying()` 当依据。** 自己 `pause()` 之后它不一定马上翻转，
+  结果就是「越点越暂停」、永远恢复不了。改成模块自己记一份状态（换页时重置）。
+* 宿主的类来自**另一个 classloader**，`Class.forName("...SlidePlayVerticalTouchLayout")`
+  会抛 `ClassNotFoundException`，但拿到实例后 `javaClass.name` 是准的 —— 只能 hook
+  框架的 `View#onTouchEvent` 再按类名过滤。而且首页的 view 是懒加载的，
+  要等它真的出现再装 hook（`retryTapTakeover`，2 秒一次）。
+* 滑动/长按不受影响：上下滑翻页由外层 ViewPager 的 `onInterceptTouchEvent` 抢手势，
+  子 View 吃掉 DOWN 并不妨碍它（和 ScrollView 里放 Button 是同一个机制）。
+
+双击现在的行为：**两次独立的点击** → 暂停后立刻恢复，净效果等于「什么都没发生」，
+但不会点赞。这是「单击零延迟」的必然代价 —— 想做到「双击完全无反应」就必须等那 300ms。
+
+---
+
 ## 代码结构
 
 ```
@@ -284,6 +328,7 @@ app/src/main/resources/META-INF/xposed/
 | 方法 | 用途 |
 | --- | --- |
 | `View#onAttachedToWindow` | **主力**。所有窗口（含悬浮窗）都会走，发现目标控件并立刻降透明度 |
+| `View#onTouchEvent` | 按运行时类名过滤出视频触摸层，接管点击（见「接管视频区域的点击」） |
 | `View#setAlpha` | 兜底。拦住 `alpha > 配置值` 的调用，防止目标应用把透明度改回去 |
 | `LayoutInflater#inflate` | 兜底。新 inflate 出来的子树立即扫一遍 |
 | `Activity#onCreate` | 按名字解析 id（自愈） |

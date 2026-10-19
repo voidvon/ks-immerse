@@ -373,6 +373,11 @@ class ImmerseModule : XposedModule() {
             logW("hook Application#onCreate failed", t)
         }
 
+        // 4.6) 接管视频区域的点击：去掉双击点赞，并让单击立刻生效。
+        //      宿主那套 view 属于另一个 classloader，所以真正的 hook 交给
+        //      retryTapTakeover()，等视图真的出现之后再装。
+        retryTapTakeover()
+
         // 5) 诊断用：Activity 可见后把整棵视图树里带 id 的控件 dump 出来，
         //    定位屏幕上真正可见的那一套控件实例。
         try {
@@ -482,6 +487,10 @@ class ImmerseModule : XposedModule() {
             }
             try {
                 retryConfigIfNeeded()
+            } catch (_: Throwable) {
+            }
+            try {
+                retryTapTakeover()
             } catch (_: Throwable) {
             }
             try {
@@ -636,6 +645,147 @@ class ImmerseModule : XposedModule() {
         (o.javaClass.getMethod(name).invoke(o) as? Number)?.toInt()
     } catch (_: Throwable) {
         null
+    }
+
+    // ---------------------------------------------------------- 手势：去掉双击点赞
+
+    /**
+     * 接管视频区域上的点击（见 [handleVideoTouch]）。
+     *
+     * 只能 hook 框架的 `View#onTouchEvent` 再按运行时类名过滤 —— 宿主那套 view
+     * 是另一个 classloader 加载的，`Class.forName` 拿不到（会抛 ClassNotFoundException），
+     * 但拿到实例之后 `javaClass.name` 是准的。
+     */
+    private fun installTapTakeover(): Boolean {
+        var ok = false
+        // App 的类来自另一个 classloader，Class.forName 拿不到；
+        // 但 View#onTouchEvent 是框架类，可以 hook，再按运行时类名过滤。
+        try {
+            val m = android.view.View::class.java.getDeclaredMethod(
+                "onTouchEvent",
+                android.view.MotionEvent::class.java,
+            )
+            hook(m).setId("ks_touch").setExceptionMode(ExceptionMode.PROTECTIVE).intercept { chain ->
+                val v = chain.thisObject as? android.view.View
+                val ev = chain.getArg(0) as? android.view.MotionEvent
+                // 关掉开关时**必须** chain.proceed() 把事件放回去 ——
+                // 返回 true 等于替宿主把这次触摸吃掉了，宿主的单击/双击/滑动就全废了
+                if (v == null || ev == null ||
+                    v.javaClass.name != Targets.CLASS_TOUCH_LAYOUT ||
+                    !config.enabled || !config.killDoubleTap
+                ) {
+                    return@intercept chain.proceed()
+                }
+                handleVideoTouch(v, ev)
+            }
+            logI("手势接管：View#onTouchEvent 已挂上")
+            ok = true
+        } catch (t: Throwable) {
+            logW("hook View#onTouchEvent failed", t)
+        }
+        return ok
+    }
+
+    /** 我们自己记的播放状态（见 [togglePlayback]） */
+    @Volatile
+    private var tapPaused = false
+
+    @Volatile
+    private var tapPausedFrame = 0
+
+    private var tapDownAt = 0L
+    private var tapDownX = 0f
+    private var tapDownY = 0f
+    private var tapMoved = false
+
+    /**
+     * 自己接管视频区域上的"点击"。
+     *
+     * 目标应用把单击（暂停）和双击（点赞）做在同一套自定义手势里，实测：
+     *
+     * ```
+     * TOUCH DOWN t=97898586
+     * PLAYER pause() t=97898895   // +309ms，就是在等"会不会来第二下"
+     * ```
+     *
+     * 所以这里直接把点击**吃掉**：单击立刻切播放/暂停，第二下直接丢弃（不再点赞）。
+     * 目标应用看不到这次手势 → 既没有等待，也不会点赞。
+     *
+     * 滑动/长按不受影响：上下滑翻页由外层 ViewPager 的 `onInterceptTouchEvent` 抢手势，
+     * 子 View 吃掉 DOWN 并不妨碍它（和 ScrollView 里放 Button 是同一个机制）。
+     */
+    private fun handleVideoTouch(v: android.view.View, ev: android.view.MotionEvent): Any {
+        when (ev.actionMasked) {
+            android.view.MotionEvent.ACTION_DOWN -> {
+                tapDownAt = ev.eventTime
+                tapDownX = ev.x
+                tapDownY = ev.y
+                tapMoved = false
+            }
+            android.view.MotionEvent.ACTION_MOVE -> {
+                val dx = ev.x - tapDownX
+                val dy = ev.y - tapDownY
+                if (dx * dx + dy * dy > 60f * 60f) tapMoved = true
+            }
+            android.view.MotionEvent.ACTION_UP -> {
+                val quick = ev.eventTime - tapDownAt < 300L
+                if (!tapMoved && quick) togglePlayback(v)
+            }
+        }
+        return true
+    }
+
+    /** 立刻切换播放/暂停（不再等双击超时） */
+    private fun togglePlayback(v: android.view.View) {
+        val decor = lastDecor?.get() ?: (v.rootView as? android.view.View)
+        if (decor == null) {
+            logI("TAP 忽略：拿不到 decor")
+            return
+        }
+        val frame = findVisibleVideoFrame(decor)
+        if (frame == null) {
+            logI("TAP 忽略：没找到可见的视频容器")
+            return
+        }
+        val fid = System.identityHashCode(frame)
+        if (fid != tapPausedFrame) {
+            // 换了一页 —— 新视频默认是在播的
+            tapPausedFrame = fid
+            tapPaused = false
+        }
+        val p = findPlayer(frame)
+        if (p == null) {
+            logI("TAP 忽略：没找到播放器（多半是广告页）")
+            return
+        }
+        // 不能拿 isPlaying() 当依据：自己 pause() 之后它不一定马上翻转，
+        // 结果就是"越点越暂停"、永远恢复不了。所以自己记一份状态。
+        val wantPause = !tapPaused
+        val ok = if (wantPause) callVoid(p, "pause") else callVoid(p, "start")
+        if (ok) tapPaused = wantPause
+        logI("TAP -> ${if (wantPause) "pause" else "start"} ok=$ok")
+    }
+
+    private fun callVoid(o: Any, name: String): Boolean = try {
+        o.javaClass.getMethod(name).invoke(o)
+        true
+    } catch (_: Throwable) {
+        false
+    }
+
+    @Volatile
+    private var tapTakeoverDone = false
+
+    @Volatile
+    private var tapTakeoverAt = 0L
+
+    /** 首页的 view 是懒加载的，等它真的出现再装 hook */
+    private fun retryTapTakeover() {
+        if (tapTakeoverDone) return
+        val now = SystemClock.uptimeMillis()
+        if (now - tapTakeoverAt < 2000L) return
+        tapTakeoverAt = now
+        if (installTapTakeover()) tapTakeoverDone = true
     }
 
     /**

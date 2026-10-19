@@ -32,6 +32,7 @@ class SettingsActivity : Activity() {
     private lateinit var cbContainVideo: CheckBox
     private lateinit var cbSkipAd: CheckBox
     private lateinit var cbAutoSkip: CheckBox
+    private lateinit var cbKillDoubleTap: CheckBox
 
     /** 初始化控件时避免把默认值当成用户修改写回去 */
     private var restoring = false
@@ -53,6 +54,7 @@ class SettingsActivity : Activity() {
         cbContainVideo = findViewById(R.id.cb_contain_video)
         cbSkipAd = findViewById(R.id.cb_skip_ad)
         cbAutoSkip = findViewById(R.id.cb_auto_skip)
+        cbKillDoubleTap = findViewById(R.id.cb_kill_double_tap)
 
         restoring = true
         swEnabled.isChecked = prefs.getBoolean(ImmerseConfig.KEY_ENABLED, true)
@@ -67,6 +69,7 @@ class SettingsActivity : Activity() {
         cbContainVideo.isChecked = prefs.getBoolean(ImmerseConfig.KEY_CONTAIN_VIDEO, true)
         cbSkipAd.isChecked = prefs.getBoolean(ImmerseConfig.KEY_SKIP_AD, false)
         cbAutoSkip.isChecked = prefs.getBoolean(ImmerseConfig.KEY_AUTO_SKIP_UNMATCHED, true)
+        cbKillDoubleTap.isChecked = prefs.getBoolean(ImmerseConfig.KEY_KILL_DOUBLE_TAP, true)
         restoring = false
         renderAlpha()
 
@@ -80,6 +83,7 @@ class SettingsActivity : Activity() {
         cbContainVideo.setOnCheckedChangeListener { _, _ -> persist() }
         cbSkipAd.setOnCheckedChangeListener { _, _ -> persist() }
         cbAutoSkip.setOnCheckedChangeListener { _, _ -> persist() }
+        cbKillDoubleTap.setOnCheckedChangeListener { _, _ -> persist() }
 
         seekAlpha.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(bar: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -111,6 +115,7 @@ class SettingsActivity : Activity() {
             .putBoolean(ImmerseConfig.KEY_CONTAIN_VIDEO, cbContainVideo.isChecked)
             .putBoolean(ImmerseConfig.KEY_SKIP_AD, cbSkipAd.isChecked)
             .putBoolean(ImmerseConfig.KEY_AUTO_SKIP_UNMATCHED, cbAutoSkip.isChecked)
+            .putBoolean(ImmerseConfig.KEY_KILL_DOUBLE_TAP, cbKillDoubleTap.isChecked)
             .apply()
 
         // 通知已经注入到宿主进程的模块：配置变了，重新读一遍。
