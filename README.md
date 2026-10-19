@@ -122,7 +122,7 @@ scale = min(容器宽 / SurfaceView 宽, 容器高 / SurfaceView 高)
   这就是"比例错误 / 看起来很生硬"的来源。
 
 所以现在**直接问播放器要真实宽高**（这两个接口没有被混淆，
-在播放器的两个核心接口上都有：`com.kwai.*` 那两个 `IMediaPlayer` / `IMediaPlayerApi`）：
+在播放器的两个核心接口 `IMediaPlayer` / `IMediaPlayerApi` 上都有）：
 
 ```java
 player.getVideoWidth()   // -> I
