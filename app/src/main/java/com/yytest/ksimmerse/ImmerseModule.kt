@@ -632,6 +632,25 @@ class ImmerseModule : XposedModule() {
         return null
     }
 
+    /**
+     * 评论区之类的浮层有没有开着。
+     *
+     * 判据：容器在视图树里、且真的占了屏幕（`isShown` + 高度够）。
+     * 这些容器平时也存在于树里，只是 GONE 或高度为 0，所以不能只看"找不找得到"。
+     */
+    private fun isOverlayOpen(decor: View): Boolean {
+        val ids = config.overlayIds()
+        if (ids.isEmpty()) return false
+        val out = ArrayList<View>(2)
+        collectAnyById(decor, ids, out)
+        if (out.isEmpty()) return false
+        val screenH = decor.resources.displayMetrics.heightPixels
+        for (v in out) {
+            if (v.isShown && v.height > screenH * 0.2f) return true
+        }
+        return false
+    }
+
     private fun collectAnyById(v: View, ids: IntArray, out: MutableList<View>) {
         val id = v.id
         for (i in ids.indices) {
@@ -918,10 +937,26 @@ class ImmerseModule : XposedModule() {
 
     // ---------------------------------------------------- 沉浸没生效 ⇒ 自动划走
 
-    /** 「没匹配上」从什么时候开始持续（0 = 当前是正常的） */
+    /** 当前这一页的标识（可见视频画面的实例），换页时会变 */
     @Volatile
-    private var mismatchSince = 0L
+    private var pageId = 0
 
+    /** 这一页是否已经判定过 —— **每个视频只判定一次**，绝不反复划走 */
+    @Volatile
+    private var pageChecked = false
+
+    /** 画面停稳的时刻（0 = 还在动） */
+    @Volatile
+    private var pageSettledAt = 0L
+
+    /** 上一次看到的画面几何（纵向位置 + 高度），用来判断画面有没有停稳 */
+    @Volatile
+    private var lastFrameY = Int.MIN_VALUE
+
+    @Volatile
+    private var lastFrameH = -1
+
+    /** 上一次注入手势的时间，兜底限流 */
     @Volatile
     private var lastSwipeAt = 0L
 
@@ -941,11 +976,13 @@ class ImmerseModule : XposedModule() {
     @Volatile
     private var seenMatchedOnce = false
 
-    /** 上一次看到的视频画面纵向位置，用来判断页面是否已经停稳 */
-    @Volatile
-    private var lastFrameY = Int.MIN_VALUE
+    /** 画面停稳多久之后才判定，给页面渲染留时间 */
+    private val settleMs = 1800L
 
     private val swipeCount = AtomicInteger(0)
+
+    /** 一共判定过多少页 —— 正常情况下应该等于"看过的视频数"，每个视频只 +1 */
+    private val judgeCount = AtomicInteger(0)
 
     /**
      * 当前**可见页**上、且真的落在屏幕里的目标控件。
@@ -1080,58 +1117,96 @@ class ImmerseModule : XposedModule() {
             logI("PAGEDUMP 异常: $t")
         }
 
-        if (!config.autoSkipUnmatched) {
-            mismatchSince = 0L
-            return
-        }
-        if (immersiveOk(decor)) {
-            seenMatchedOnce = true
-            mismatchSince = 0L
-            noteBlock("")
-            return
-        }
-        // 只对"确实是一个整页视频"的页面动手，避免在消息/我等非视频页面乱滑。
-        // 注意：不能用播放器是否存在来判断 —— 广告页的播放器拿不到（findPlayer 返回 null），
-        // 那样反而会把广告页当成"不是视频页"而永远跳过。
-        try {
-            val frame = findVisibleVideoFrame(decor)
-            val screenH = decor.resources.displayMetrics.heightPixels
-            if (frame == null || frame.height < screenH * 0.2f) {
-                mismatchSince = 0L
-                noteBlock("没有整页视频画面")
-                return
-            }
-            if (!seenMatchedOnce) {
-                mismatchSince = 0L
-                noteBlock("还没见过生效的视频页")
-                return
-            }
-            // 页面正在滑动时不算数：翻页动画中间那几帧本来就"没有目标控件"，
-            // 不排掉的话会把正常视频也划走。
-            val fl = IntArray(2)
-            frame.getLocationOnScreen(fl)
-            if (lastFrameY == Int.MIN_VALUE || kotlin.math.abs(fl[1] - lastFrameY) > 8) {
-                lastFrameY = fl[1]
-                mismatchSince = 0L
-                noteBlock("页面还在滑动 (y=${fl[1]})")
-                return
-            }
-            noteBlock("")
-        } catch (t: Throwable) {
-            mismatchSince = 0L
-            noteBlock("异常 ${t.javaClass.name}: ${t.message}")
+        if (!config.autoSkipUnmatched) return
+
+        // 评论区（或其它浮层）开着的时候，信息流那一页会被盖住/隐藏，
+        // "屏幕上没有生效的目标控件"这条判据会把评论区误判成广告页。
+        // 所以先确认浮层没开 —— 开着就什么都不做，等关掉再说。
+        if (isOverlayOpen(decor)) {
+            pageSettledAt = 0L
+            noteBlock("评论区等浮层开着")
             return
         }
 
-        if (mismatchSince == 0L) {
-            mismatchSince = now
-            logI("UNMATCHED：这一页没有目标控件生效，观察 2s 后划走")
+        // 只对"确实是一个整页视频"的页面动手，避免在消息/我等非视频页面乱滑。
+        // 注意：不能用播放器是否存在来判断 —— 广告页的播放器拿不到（findPlayer 返回 null），
+        // 那样反而会把广告页当成"不是视频页"而永远跳过。
+        val frame = try {
+            findVisibleVideoFrame(decor)
+        } catch (t: Throwable) {
+            noteBlock("异常 ${t.javaClass.name}: ${t.message}")
             return
         }
-        if (now - mismatchSince < 2000L) return
-        if (now - lastSwipeAt < 1500L) return
+        val screenH = decor.resources.displayMetrics.heightPixels
+        if (frame == null || frame.height < screenH * 0.2f) {
+            pageId = 0
+            pageChecked = false
+            pageSettledAt = 0L
+            noteBlock("没有整页视频画面")
+            return
+        }
+
+        val fid = System.identityHashCode(frame)
+        val fl = IntArray(2)
+        frame.getLocationOnScreen(fl)
+        val y = fl[1]
+        val h = frame.height
+
+        // 换了一页（ViewPager 换了实例）→ 重新开始观察
+        if (fid != pageId) {
+            pageId = fid
+            pageChecked = false
+            pageSettledAt = 0L
+            lastFrameY = y
+            lastFrameH = h
+            noteBlock("换了一页")
+            return
+        }
+        // 画面还在动（翻页动画 / 打开评论区都会改变画面几何）→ 重新计时。
+        // 这一点顺带挡住了评论区：拉开评论时画面会变，计时被重置，
+        // 而这一页早就判定过了，所以不会再划走。
+        if (y != lastFrameY || h != lastFrameH) {
+            lastFrameY = y
+            lastFrameH = h
+            pageSettledAt = 0L
+            noteBlock("画面还在动 (y=$y h=$h)")
+            return
+        }
+        // 这一页已经判定过，之后无论用户怎么操作都不再重复判定
+        if (pageChecked) {
+            noteBlock("这一页已判定过")
+            return
+        }
+        if (pageSettledAt == 0L) {
+            pageSettledAt = now
+            noteBlock("等画面停稳")
+            return
+        }
+        if (now - pageSettledAt < settleMs) return
+
+        // ---------------- 画面停稳，这一页只判定这一次 ----------------
+        pageChecked = true
+        val ok = try {
+            immersiveOk(decor)
+        } catch (t: Throwable) {
+            noteBlock("异常 ${t.javaClass.name}: ${t.message}")
+            return
+        }
+        val judgeNo = judgeCount.incrementAndGet()
+        if (ok) {
+            seenMatchedOnce = true
+            logI("JUDGE #$judgeNo：这一页沉浸已生效，保持不动 (y=$y h=$h)")
+            noteBlock("")
+            return
+        }
+        noteBlock("")
+        if (!seenMatchedOnce) {
+            logI("JUDGE #$judgeNo：这一页没生效，但还没确认过信息流，先不划 (y=$y h=$h)")
+            return
+        }
+        logI("JUDGE #$judgeNo：这一页沉浸没生效，划走 (y=$y h=$h)")
+        if (now - lastSwipeAt < 800L) return
         lastSwipeAt = now
-        mismatchSince = 0L
         val n = swipeCount.incrementAndGet()
         logI("UNMATCHED #$n：注入上滑手势翻页")
         injectSwipeUp(decor)
@@ -1141,10 +1216,10 @@ class ImmerseModule : XposedModule() {
     private fun noteBlock(reason: String) {
         if (reason == lastMismatchNote) return
         lastMismatchNote = reason
-        if (reason.isEmpty()) {
-            logI("UNMATCHED 判定：已满足（开始计时）")
-        } else if (config.debugDumpTree) {
-            logI("UNMATCHED 跳过：$reason")
+        // 换页 / 浮层这两条是用户能直接感知的状态，始终打；其余细节只在调试开关下打
+        val always = reason == "换了一页" || reason.startsWith("评论区")
+        if (config.debugDumpTree || always) {
+            logI("UNMATCHED 状态：${reason.ifEmpty { "已停稳并判定" }}")
         }
     }
 

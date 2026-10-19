@@ -128,6 +128,35 @@ object Targets {
 
     val VIDEO_REF_IDS = intArrayOf(ID_TEXTURE_VIEW_FRAME, ID_SLIDE_PLAYERKIT_VIEW, ID_PLAYER)
 
+    // ------------------------------------------------------------------ 浮层
+
+    /**
+     * 「评论区」浮层。
+     *
+     * 拉开评论区时，信息流那一页的右侧栏 / 底部信息区会被整个盖住或隐藏，
+     * 于是"屏幕上没有生效的目标控件"这个判据会**误判成广告页**，把视频划走。
+     * 所以判定之前先看这个容器在不在。
+     *
+     * ⚠️ 只认 `comment_panel_container`。实测（uiautomator dump）：
+     *   - 评论区**关着**时 `comment_panel_container` 不在树里，
+     *     但 `comment_container` / `comment_secondary_panel_container`
+     *     一直都在（面板是预先 inflate 好的）；
+     *   - 拿后者当判据会一直"以为评论区开着"，自动划走直接失效。
+     *
+     * id 来源：评论区打开时 `uiautomator dump` 里出现
+     * `com.kuaishou.nebula:id/comment_panel_container`，
+     * 再回 `_recon/core-res-dump.txt` 查数值。
+     */
+    const val NAME_COMMENT_PANEL = "comment_panel_container"
+    const val ID_COMMENT_PANEL = 0x7f0906c1
+
+    /** 判定"自动划走"之前必须确认这些浮层都没开 */
+    val OVERLAY_IDS = intArrayOf(ID_COMMENT_PANEL)
+
+    val OVERLAY = arrayOf(
+        NAME_COMMENT_PANEL to ID_COMMENT_PANEL,
+    )
+
     // ------------------------------------------------------------------ 广告标签
 
     /**

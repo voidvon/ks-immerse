@@ -100,6 +100,11 @@ class ImmerseConfig {
     private var hotIds: IntArray = idsOf(Targets.BOTTOM_HOT)
     @Volatile
     private var adLabelIds: IntArray = idsOf(Targets.AD_LABEL)
+    @Volatile
+    private var overlayIds: IntArray = idsOf(Targets.OVERLAY)
+
+    /** 判定"自动划走"之前要排除的浮层（评论区等） */
+    fun overlayIds(): IntArray = overlayIds
 
     /** 启用分组的 id 并集，热路径只扫这个小数组 */
     @Volatile
@@ -147,6 +152,7 @@ class ImmerseConfig {
         disclaimerIds = resolve(res, Targets.DISCLAIMER, disclaimerIds)
         hotIds = resolve(res, Targets.BOTTOM_HOT, hotIds)
         adLabelIds = resolve(res, Targets.AD_LABEL, adLabelIds)
+        overlayIds = resolve(res, Targets.OVERLAY, overlayIds)
         rebuild()
         return true
     }
