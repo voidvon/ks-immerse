@@ -111,6 +111,23 @@
             android:minHeight="48dp"
             android:text="@string/label_auto_skip_unmatched" />
 
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="8dp"
+            android:text="@string/label_auto_skip_delay" />
+
+        <TextView
+            android:id="@+id/tv_auto_skip_value"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="13sp" />
+
+        <SeekBar
+            android:id="@+id/seek_auto_skip"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
         <CheckBox
             android:id="@+id/cb_kill_double_tap"
             android:layout_width="match_parent"

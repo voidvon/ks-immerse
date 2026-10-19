@@ -28,6 +28,14 @@ class ImmerseConfig {
         const val KEY_AUTO_SKIP_UNMATCHED = "auto_skip_unmatched"
         const val KEY_DEBUG_DUMP = "debug_dump_tree"
         const val KEY_KILL_DOUBLE_TAP = "kill_double_tap"
+        const val KEY_AUTO_SKIP_DELAY = "auto_skip_delay_ms"
+
+        /** 自动划走：画面停稳后等多久才判定。太短会在页面还没渲染完时就误判 */
+        const val DEFAULT_AUTO_SKIP_DELAY = 1800
+
+        const val AUTO_SKIP_MIN = 100
+        const val AUTO_SKIP_MAX = 5000
+        const val AUTO_SKIP_STEP = 100
 
         /** 需求：右侧栏与底部信息区改为 0.1 透明度，保留可点击 */
         const val DEFAULT_ALPHA = 0.1f
@@ -94,6 +102,16 @@ class ImmerseConfig {
     var killDoubleTap: Boolean = true
         private set
 
+    /**
+     * 「沉浸没生效 ⇒ 自动划走」判定前，等画面停稳多久（毫秒）。
+     *
+     * 画面几何一有变化就重新计时，所以这个值决定的是"停稳之后还要再等多久"，
+     * 调小划得更快，但页面还没渲染完就判定的话容易误划。
+     */
+    @Volatile
+    var autoSkipDelayMs: Int = DEFAULT_AUTO_SKIP_DELAY
+        private set
+
     // 各分组当前使用的 id（可被运行时按名解析替换）
     @Volatile
     private var rightIds: IntArray = idsOf(Targets.RIGHT_COLUMN)
@@ -141,12 +159,16 @@ class ImmerseConfig {
         autoSkipUnmatched = bool(get(KEY_AUTO_SKIP_UNMATCHED), true)
         debugDumpTree = bool(get(KEY_DEBUG_DUMP), false)
         killDoubleTap = bool(get(KEY_KILL_DOUBLE_TAP), true)
+        autoSkipDelayMs = int(get(KEY_AUTO_SKIP_DELAY), DEFAULT_AUTO_SKIP_DELAY)
+            .coerceIn(AUTO_SKIP_MIN, AUTO_SKIP_MAX)
         rebuild()
     }
 
     private fun bool(v: Any?, d: Boolean): Boolean = (v as? Boolean) ?: d
 
     private fun float(v: Any?, d: Float): Float = (v as? Number)?.toFloat() ?: d
+
+    private fun int(v: Any?, d: Int): Int = (v as? Number)?.toInt() ?: d
 
     // ------------------------------------------------------------------ 资源名解析
 
@@ -307,6 +329,7 @@ class ImmerseConfig {
         append(" autoSkipUnmatched=").append(autoSkipUnmatched)
         append(" debug=").append(debugDumpTree)
         append(" killDoubleTap=").append(killDoubleTap)
+        append(" autoSkipDelay=").append(autoSkipDelayMs)
     }
 
     private fun hex(v: Int) = "0x" + Integer.toHexString(v)

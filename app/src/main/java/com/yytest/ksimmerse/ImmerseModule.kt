@@ -1170,8 +1170,6 @@ class ImmerseModule : XposedModule() {
     @Volatile
     private var seenMatchedOnce = false
 
-    /** 画面停稳多久之后才判定，给页面渲染留时间 */
-    private val settleMs = 1800L
 
     private val swipeCount = AtomicInteger(0)
 
@@ -1372,7 +1370,8 @@ class ImmerseModule : XposedModule() {
             noteBlock("等画面停稳")
             return
         }
-        if (now - pageSettledAt < settleMs) return
+        // 等多久由设置项决定（画面一有变化就重新计时，见上面两处 return）
+        if (now - pageSettledAt < config.autoSkipDelayMs) return
 
         // ---------------- 画面停稳，这一页只判定这一次 ----------------
         pageChecked = true

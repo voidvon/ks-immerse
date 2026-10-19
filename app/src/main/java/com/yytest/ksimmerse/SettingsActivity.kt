@@ -32,6 +32,8 @@ class SettingsActivity : Activity() {
     private lateinit var cbContainVideo: CheckBox
     private lateinit var cbAutoSkip: CheckBox
     private lateinit var cbKillDoubleTap: CheckBox
+    private lateinit var seekAutoSkip: SeekBar
+    private lateinit var tvAutoSkipValue: TextView
 
     /** 初始化控件时避免把默认值当成用户修改写回去 */
     private var restoring = false
@@ -57,6 +59,10 @@ class SettingsActivity : Activity() {
         cbContainVideo = findViewById(R.id.cb_contain_video)
         cbAutoSkip = findViewById(R.id.cb_auto_skip)
         cbKillDoubleTap = findViewById(R.id.cb_kill_double_tap)
+        seekAutoSkip = findViewById(R.id.seek_auto_skip)
+        // max 由常量算出来，别写在布局里，免得改了 AUTO_SKIP_MIN/MAX 忘了同步
+        seekAutoSkip.max = AUTO_SKIP_MAX_PROGRESS
+        tvAutoSkipValue = findViewById(R.id.tv_auto_skip_value)
 
         restoring = true
         swEnabled.isChecked = prefs.getBoolean(ImmerseConfig.KEY_ENABLED, true)
@@ -71,8 +77,13 @@ class SettingsActivity : Activity() {
         cbContainVideo.isChecked = prefs.getBoolean(ImmerseConfig.KEY_CONTAIN_VIDEO, true)
         cbAutoSkip.isChecked = prefs.getBoolean(ImmerseConfig.KEY_AUTO_SKIP_UNMATCHED, true)
         cbKillDoubleTap.isChecked = prefs.getBoolean(ImmerseConfig.KEY_KILL_DOUBLE_TAP, true)
+        seekAutoSkip.progress = ((prefs.getInt(
+            ImmerseConfig.KEY_AUTO_SKIP_DELAY,
+            ImmerseConfig.DEFAULT_AUTO_SKIP_DELAY,
+        ) - ImmerseConfig.AUTO_SKIP_MIN) / ImmerseConfig.AUTO_SKIP_STEP).coerceIn(0, AUTO_SKIP_MAX_PROGRESS)
         restoring = false
         renderAlpha()
+        renderAutoSkip()
 
         swEnabled.setOnCheckedChangeListener { _, _ -> persist() }
         cbRight.setOnCheckedChangeListener { _, _ -> persist() }
@@ -85,6 +96,16 @@ class SettingsActivity : Activity() {
         cbAutoSkip.setOnCheckedChangeListener { _, _ -> persist() }
         cbKillDoubleTap.setOnCheckedChangeListener { _, _ -> persist() }
 
+        seekAutoSkip.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(bar: SeekBar?, progress: Int, fromUser: Boolean) {
+                renderAutoSkip()
+                if (fromUser) persist()
+            }
+
+            override fun onStartTrackingTouch(bar: SeekBar?) = Unit
+            override fun onStopTrackingTouch(bar: SeekBar?) = Unit
+        })
+
         seekAlpha.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(bar: SeekBar?, progress: Int, fromUser: Boolean) {
                 renderAlpha()
@@ -94,6 +115,18 @@ class SettingsActivity : Activity() {
             override fun onStartTrackingTouch(bar: SeekBar?) = Unit
             override fun onStopTrackingTouch(bar: SeekBar?) = Unit
         })
+    }
+
+    /** SeekBar 的最大进度（0 → AUTO_SKIP_MIN，MAX → AUTO_SKIP_MAX） */
+    private val AUTO_SKIP_MAX_PROGRESS =
+        (ImmerseConfig.AUTO_SKIP_MAX - ImmerseConfig.AUTO_SKIP_MIN) / ImmerseConfig.AUTO_SKIP_STEP
+
+    /** 当前滑条对应的毫秒数 */
+    private fun autoSkipMs(): Int =
+        ImmerseConfig.AUTO_SKIP_MIN + seekAutoSkip.progress * ImmerseConfig.AUTO_SKIP_STEP
+
+    private fun renderAutoSkip() {
+        tvAutoSkipValue.text = getString(R.string.auto_skip_delay_format, autoSkipMs() / 1000f)
     }
 
     private fun renderAlpha() {
@@ -115,6 +148,7 @@ class SettingsActivity : Activity() {
             .putBoolean(ImmerseConfig.KEY_CONTAIN_VIDEO, cbContainVideo.isChecked)
             .putBoolean(ImmerseConfig.KEY_AUTO_SKIP_UNMATCHED, cbAutoSkip.isChecked)
             .putBoolean(ImmerseConfig.KEY_KILL_DOUBLE_TAP, cbKillDoubleTap.isChecked)
+            .putInt(ImmerseConfig.KEY_AUTO_SKIP_DELAY, autoSkipMs())
             .apply()
 
         // 通知已经注入到宿主进程的模块：配置变了，重新读一遍。
