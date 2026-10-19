@@ -5,20 +5,31 @@
 
     <string name="section_general">总开关</string>
     <string name="label_enabled">启用沉浸模式</string>
+
+    <string name="section_immersive">沉浸效果</string>
     <string name="label_alpha">目标透明度</string>
     <string name="alpha_value_format">%1$d%%　（alpha = %2$.2f）</string>
 
-    <string name="section_targets">作用范围</string>
+    <string name="section_targets">压暗哪些控件</string>
+    <string name="hint_targets">只改透明度、不改可见性，所以压暗后依然可以点。</string>
     <string name="label_right_column">右侧整列（头像 / 关注 / 点赞 / 评论 / 收藏 / 转发）</string>
     <string name="label_bottom_caption">底部信息区（发布者名称 / 说明 / 标签）</string>
     <string name="label_disclaimer">作者声明</string>
     <string name="label_bottom_hot">底部热点条（🔥 热点 · xxx）</string>
     <string name="label_pendant">右上角红包 / 金币悬浮挂件</string>
-    <string name="label_pin_search">暂停时的「搜画面」固定到右上角</string>
+
+    <string name="section_video">视频画面</string>
     <string name="label_contain_video">视频完整显示（contain，不裁切左右）</string>
-    <string name="label_auto_skip_unmatched">沉浸没生效的视频自动划走（右侧栏没被压暗的，多半是广告）</string>
+
+    <string name="section_gesture">手势</string>
     <string name="label_kill_double_tap">去掉双击点赞，单击立刻暂停/继续</string>
-    <string name="label_auto_skip_delay">自动划走前等待画面停稳的时间</string>
+
+    <string name="section_overlay">悬浮控件</string>
+    <string name="label_pin_search">暂停时的「搜画面」固定到右上角</string>
+
+    <string name="section_auto_skip">自动划走</string>
+    <string name="label_auto_skip_unmatched">沉浸没生效的视频自动划走（右侧栏没被压暗的，多半是广告）</string>
+    <string name="label_auto_skip_delay">判定前等待画面停稳的时间</string>
     <string name="auto_skip_delay_format">%1$.1f 秒　（越短划得越快，太短容易误划）</string>
 
     <string name="section_hint">说明</string>

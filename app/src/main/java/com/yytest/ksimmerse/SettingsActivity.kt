@@ -34,6 +34,7 @@ class SettingsActivity : Activity() {
     private lateinit var cbKillDoubleTap: CheckBox
     private lateinit var seekAutoSkip: SeekBar
     private lateinit var tvAutoSkipValue: TextView
+    private lateinit var tvAutoSkipLabel: TextView
 
     /** 初始化控件时避免把默认值当成用户修改写回去 */
     private var restoring = false
@@ -63,6 +64,7 @@ class SettingsActivity : Activity() {
         // max 由常量算出来，别写在布局里，免得改了 AUTO_SKIP_MIN/MAX 忘了同步
         seekAutoSkip.max = AUTO_SKIP_MAX_PROGRESS
         tvAutoSkipValue = findViewById(R.id.tv_auto_skip_value)
+        tvAutoSkipLabel = findViewById(R.id.tv_auto_skip_label)
 
         restoring = true
         swEnabled.isChecked = prefs.getBoolean(ImmerseConfig.KEY_ENABLED, true)
@@ -84,6 +86,7 @@ class SettingsActivity : Activity() {
         restoring = false
         renderAlpha()
         renderAutoSkip()
+        renderAutoSkipEnabled(cbAutoSkip.isChecked)
 
         swEnabled.setOnCheckedChangeListener { _, _ -> persist() }
         cbRight.setOnCheckedChangeListener { _, _ -> persist() }
@@ -93,7 +96,10 @@ class SettingsActivity : Activity() {
         cbPendant.setOnCheckedChangeListener { _, _ -> persist() }
         cbPinSearch.setOnCheckedChangeListener { _, _ -> persist() }
         cbContainVideo.setOnCheckedChangeListener { _, _ -> persist() }
-        cbAutoSkip.setOnCheckedChangeListener { _, _ -> persist() }
+        cbAutoSkip.setOnCheckedChangeListener { _, checked ->
+            renderAutoSkipEnabled(checked)
+            persist()
+        }
         cbKillDoubleTap.setOnCheckedChangeListener { _, _ -> persist() }
 
         seekAutoSkip.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -124,6 +130,14 @@ class SettingsActivity : Activity() {
     /** 当前滑条对应的毫秒数 */
     private fun autoSkipMs(): Int =
         ImmerseConfig.AUTO_SKIP_MIN + seekAutoSkip.progress * ImmerseConfig.AUTO_SKIP_STEP
+
+    /** 自动划走关掉时，把下面那条时间滑条置灰 —— 一眼看出它是这个开关的子项 */
+    private fun renderAutoSkipEnabled(on: Boolean) {
+        seekAutoSkip.isEnabled = on
+        val a = if (on) 1f else 0.4f
+        tvAutoSkipValue.alpha = a
+        tvAutoSkipLabel.alpha = a
+    }
 
     private fun renderAutoSkip() {
         tvAutoSkipValue.text = getString(R.string.auto_skip_delay_format, autoSkipMs() / 1000f)

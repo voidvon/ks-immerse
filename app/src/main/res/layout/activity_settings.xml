@@ -38,10 +38,16 @@
             android:minHeight="48dp"
             android:text="@string/label_enabled" />
 
+        <!-- ==================== 沉浸效果 ==================== -->
+
+        <TextView
+            style="@style/SectionTitle"
+            android:text="@string/section_immersive" />
+
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:paddingTop="12dp"
+            android:paddingTop="4dp"
             android:text="@string/label_alpha" />
 
         <TextView
@@ -56,11 +62,15 @@
             android:layout_height="wrap_content"
             android:max="100" />
 
-        <!-- ==================== 作用范围 ==================== -->
+        <!-- ==================== 压暗哪些控件 ==================== -->
 
         <TextView
             style="@style/SectionTitle"
             android:text="@string/section_targets" />
+
+        <TextView
+            style="@style/HintText"
+            android:text="@string/hint_targets" />
 
         <CheckBox
             android:id="@+id/cb_right_column"
@@ -97,12 +107,50 @@
             android:minHeight="48dp"
             android:text="@string/label_pendant" />
 
+        <!-- ==================== 视频画面 ==================== -->
+
+        <TextView
+            style="@style/SectionTitle"
+            android:text="@string/section_video" />
+
         <CheckBox
             android:id="@+id/cb_contain_video"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:minHeight="48dp"
             android:text="@string/label_contain_video" />
+
+        <!-- ==================== 手势 ==================== -->
+
+        <TextView
+            style="@style/SectionTitle"
+            android:text="@string/section_gesture" />
+
+        <CheckBox
+            android:id="@+id/cb_kill_double_tap"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="48dp"
+            android:text="@string/label_kill_double_tap" />
+
+        <!-- ==================== 悬浮控件 ==================== -->
+
+        <TextView
+            style="@style/SectionTitle"
+            android:text="@string/section_overlay" />
+
+        <CheckBox
+            android:id="@+id/cb_pin_search"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="48dp"
+            android:text="@string/label_pin_search" />
+
+        <!-- ==================== 自动划走 ==================== -->
+
+        <TextView
+            style="@style/SectionTitle"
+            android:text="@string/section_auto_skip" />
 
         <CheckBox
             android:id="@+id/cb_auto_skip"
@@ -112,6 +160,7 @@
             android:text="@string/label_auto_skip_unmatched" />
 
         <TextView
+            android:id="@+id/tv_auto_skip_label"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:paddingTop="8dp"
@@ -127,20 +176,6 @@
             android:id="@+id/seek_auto_skip"
             android:layout_width="match_parent"
             android:layout_height="wrap_content" />
-
-        <CheckBox
-            android:id="@+id/cb_kill_double_tap"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:minHeight="48dp"
-            android:text="@string/label_kill_double_tap" />
-
-        <CheckBox
-            android:id="@+id/cb_pin_search"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:minHeight="48dp"
-            android:text="@string/label_pin_search" />
 
         <!-- ==================== 提示 ==================== -->
 
