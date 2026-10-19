@@ -480,9 +480,6 @@ class ImmerseModule : XposedModule() {
             } catch (_: Throwable) {
             }
             try {
-            } catch (_: Throwable) {
-            }
-            try {
                 retryConfigIfNeeded()
             } catch (_: Throwable) {
             }
