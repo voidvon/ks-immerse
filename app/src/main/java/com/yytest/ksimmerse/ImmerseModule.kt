@@ -1,8 +1,14 @@
 package com.yytest.ksimmerse
 
 import android.app.Activity
+import android.app.Application
+import android.content.Context
 import android.content.SharedPreferences
+import android.database.ContentObserver
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
@@ -107,6 +113,133 @@ class ImmerseModule : XposedModule() {
                 logW("registerOnSharedPreferenceChangeListener failed", t)
             }
         }
+    }
+
+    // ------------------------------------------------ 设置实时生效（ContentProvider 通道）
+
+    /** 本进程的 Application，作为访问 ContentResolver 的 Context */
+    @Volatile
+    private var appContext: Application? = null
+
+    /** 已经成功从 Provider 读到过配置 */
+    @Volatile
+    private var configLoaded = false
+
+    /** 已经注册过监听 */
+    @Volatile
+    private var configObserverRegistered = false
+
+    private var configObserver: ContentObserver? = null
+
+    @Volatile
+    private var lastConfigRetryAt = 0L
+
+    /**
+     * 建立配置通道：先从 [ConfigProvider] 拉一次配置，再注册监听。
+     *
+     * 之后用户在模块界面里改任何一项，[SettingsActivity] 都会
+     * `notifyChange`，这里的 observer 立刻被回调 → 重新载入 → 刷新当前界面。
+     * 不需要重启宿主进程。
+     *
+     * 只有主进程需要 —— 其它进程（push / messagesdk）没有界面，
+     * 给它们也装一份只会让每次改设置都触发四五次重载。
+     */
+    private fun setupConfigChannel(app: Application) {
+        appContext = app
+        if (processName != Targets.PACKAGE) return
+        loadConfig(app, "启动")
+        registerConfigObserver(app)
+    }
+
+    private fun registerConfigObserver(app: Application) {
+        if (configObserverRegistered) return
+        configObserverRegistered = true
+        try {
+            val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+                override fun onChange(selfChange: Boolean) {
+                    try {
+                        loadConfig(app, "设置变化")
+                    } catch (t: Throwable) {
+                        logW("reload on change failed", t)
+                    }
+                }
+            }
+            app.contentResolver.registerContentObserver(ConfigProvider.CONTENT_URI, false, observer)
+            configObserver = observer
+            logI("config channel ready: ${ConfigProvider.CONTENT_URI}")
+        } catch (t: Throwable) {
+            configObserverRegistered = false
+            logW("registerContentObserver failed", t)
+        }
+    }
+
+    /**
+     * 从 Provider 读一次配置。
+     *
+     * ⚠️ 装了新 APK 之后**第一次**启动宿主时这里多半读不到：
+     * ColorOS 的关联启动管控会拦住「快手去启动模块」这一步，日志是
+     * `OplusAppStartupManager: prevent start com.yytest.ksimmerse ... by contentprovider`，
+     * 紧接着 `Failed to find provider info`，query 返回 null。
+     * 只要用户手动打开过一次模块界面，这个应用就不再是 "stopped" 状态，之后一直正常。
+     * 所以读不到不算失败，交给 [retryConfigIfNeeded] 定期重试。
+     */
+    private fun loadConfig(ctx: Context, why: String) {
+        val map = try {
+            readProvider(ctx)
+        } catch (t: Throwable) {
+            logW("查询设置 Provider 失败（$why）", t)
+            return
+        }
+        if (map.isEmpty()) {
+            // 读不到就保持代码里的默认值 —— 不要 bind 一个空 map，那会把当前值重置掉
+            if (why != "重试") logI("设置 Provider 暂无数据（$why），沿用默认值，稍后重试")
+            return
+        }
+        config.bindValues(map)
+        configLoaded = true
+        logI("config reloaded from provider（$why）: ${config.snapshot()}")
+
+        // 关键：立刻把新配置刷到**当前已经在屏幕上**的控件上，
+        // 否则透明度/开关要等控件下次挂载才生效，看起来就是"改了没反应"。
+        try {
+            val decor = lastDecor?.get()
+            if (decor != null) config.reapplyAll(decor)
+        } catch (t: Throwable) {
+            logW("reapplyAll failed", t)
+        }
+    }
+
+    /** 还没读到配置就每 3 秒重试一次，直到成功（见 [loadConfig] 的注释） */
+    private fun retryConfigIfNeeded() {
+        if (configLoaded) return
+        val ctx = appContext ?: return
+        val now = SystemClock.uptimeMillis()
+        if (now - lastConfigRetryAt < 3000L) return
+        lastConfigRetryAt = now
+        loadConfig(ctx, "重试")
+        if (configLoaded) appContext?.let { registerConfigObserver(it) }
+    }
+
+    /** 从模块进程的 Provider 读出全部设置项 */
+    private fun readProvider(ctx: Context): Map<String, Any?> {
+        val out = HashMap<String, Any?>()
+        val c = ctx.contentResolver.query(ConfigProvider.CONTENT_URI, null, null, null, null)
+            ?: return out
+        c.use { cur ->
+            while (cur.moveToNext()) {
+                val k = cur.getString(0) ?: continue
+                val t = cur.getString(1)
+                val v = cur.getString(2)
+                out[k] = when (t) {
+                    ConfigProvider.TYPE_BOOL -> v == "1"
+                    ConfigProvider.TYPE_FLOAT -> v?.toFloatOrNull()
+                    ConfigProvider.TYPE_INT -> v?.toIntOrNull()
+                    ConfigProvider.TYPE_LONG -> v?.toLongOrNull()
+                    else -> v
+                }
+            }
+        }
+        return out
     }
 
     // ------------------------------------------------------------------ Hook 安装
@@ -221,6 +354,26 @@ class ImmerseModule : XposedModule() {
             logW("hook Activity#onCreate failed", t)
         }
 
+        // 4.5) Application#onCreate —— 建立"设置实时生效"通道。
+        // 选这个点是因为 Application 本身就是 Context，而且是整个进程最早的稳定入口，
+        // 能保证第一帧画面出来之前配置就已经是用户设定的值。
+        try {
+            val m = Application::class.java.getDeclaredMethod("onCreate")
+            hook(m).setId("ks_app_create").setExceptionMode(ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    val r = chain.proceed()
+                    try {
+                        (chain.thisObject as? Application)?.let { setupConfigChannel(it) }
+                    } catch (t: Throwable) {
+                        logW("setupConfigChannel failed", t)
+                    }
+                    r
+                }
+            logI("hook ok: Application#onCreate")
+        } catch (t: Throwable) {
+            logW("hook Application#onCreate failed", t)
+        }
+
         // 5) 诊断用：Activity 可见后把整棵视图树里带 id 的控件 dump 出来，
         //    定位屏幕上真正可见的那一套控件实例。
         try {
@@ -318,12 +471,18 @@ class ImmerseModule : XposedModule() {
 
     private val containTick = object : Runnable {
         override fun run() {
+            // 无条件跑：关掉 contain 时它负责把画面恢复成铺满容器，
+            // 否则设置里关掉"视频完整显示"要等下一个视频才看得出变化。
             try {
-                if (config.containVideo) fixContain()
+                fixContain()
             } catch (_: Throwable) {
             }
             try {
                 if (config.skipAd) adTick()
+            } catch (_: Throwable) {
+            }
+            try {
+                retryConfigIfNeeded()
             } catch (_: Throwable) {
             }
             try {
@@ -359,7 +518,12 @@ class ImmerseModule : XposedModule() {
         // 其余情况目标就是原生尺寸，等价于 MATCH_PARENT —— 顺便把之前留下的显式尺寸清掉。
         val targetW: Int
         val targetH: Int
-        if (vAspect > cAspect) {
+        if (!config.containVideo) {
+            // 设置里关掉了 contain —— 主动恢复成"铺满容器"（= 原生 cover 行为），
+            // 不然会一直保持着我们上次改小的尺寸。
+            targetW = cW
+            targetH = cH
+        } else if (vAspect > cAspect) {
             targetW = cW
             targetH = Math.round(cW / vAspect).toInt()
         } else {

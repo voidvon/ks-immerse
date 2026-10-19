@@ -244,6 +244,7 @@ app/src/main/java/com/yytest/ksimmerse/
   ImmerseConfig.kt   配置读写、按 id/类名判命中、祖先去重、透明度应用
   ImmerseModule.kt   全部 hook：onAttachedToWindow / setAlpha / inflate / onCreate / onResume
   SettingsActivity.kt 设置界面
+  ConfigProvider.kt  只读 ContentProvider —— 把设置实时送给宿主进程
 app/src/main/resources/META-INF/xposed/
   module.prop        minApiVersion / targetApiVersion / staticScope / autoHotReload
   java_init.list     入口类
@@ -302,24 +303,83 @@ cd _recon && unzip -o base.apk 'classes*.dex' -d dex/
 * 只按 `14.7.10.11757` 适配。换版本若控件 id 变化，改 `Targets.kt` 即可
   （开着 `debug_dump_tree` 能看到带 id、坐标、父类、LayoutParams 的完整视图树）。
 
-### 设置界面读不到的问题
+### 设置怎么送到宿主进程（以及为什么不能用 remote preferences）
 
 本机实测 `getRemotePreferences("ks_immerse")` 返回的对象 **`keys=[]`**（空），
 所以宿主进程里所有开关都落在代码默认值上 —— 设置界面改了不生效。
 
-模块侧代码是对的，问题出在 Vector 的 remote preferences 镜像没被填充
-（`/data/misc/<uuid>/prefs/` 下没有本模块的文件，即使已在 `AndroidManifest.xml` 里声明
-`<meta-data android:name="xposedsharedprefs" android:value="true"/>`、重装 APK、
-并用 `vector-cli modules disable/enable` 重新加载过）。
+模块侧代码是对的，问题出在 Vector 的 remote preferences 通道没被填充。
+已经排除过的原因：
 
-排查时可以用这条日志确认当前进程实际拿到的值：
+* `AndroidManifest.xml` 里已经声明
+  `<meta-data android:name="xposedsharedprefs" android:value="true"/>`；
+* 重装 APK、`vector-cli modules disable/enable` 重新加载模块都没用；
+* 模块的 `shared_prefs/ks_immerse.xml` 确实存在、内容也正确；
+* 想让 root 把它改成 world-readable 也不行 —— SELinux 不允许 `chmod` 应用私有目录，
+  而 DAC 上 `/data/data/<pkg>` 是 `drwx------`，宿主进程（另一个 uid）本来就读不到。
+
+排查时可以用这条日志确认：
 
 ```
-KSImmerse: prefs group=ks_immerse null=false keys=[]
-KSImmerse: hooks installed, ... enabled=true alpha=0.1 ... autoSkipUnmatched=true
+KSImmerse: prefs group=ks_immerse null=false keys=[]      ← 官方通道拿到的是空对象
 ```
 
-**在修好之前，要改行为只能改 `ImmerseConfig.kt` 里的默认值然后重新编译安装。**
+**所以自己走了一条：模块里声明一个只读 `ContentProvider`，宿主进程查询它、
+并注册 `ContentObserver` 监听变化。**
+
+```
+模块进程                                       宿主进程
+────────                                       ────────
+SettingsActivity.persist()
+  └─ 写 SharedPreferences
+  └─ contentResolver.notifyChange(URI)
+                    │
+                    ▼
+        ConfigProvider.query()  ◄──── Application#onCreate 时查一次
+        （读自己的 SharedPreferences）      registerContentObserver(URI)
+                                              └─ onChange → 重新载入 → reapplyAll
+```
+
+几个关键点：
+
+* **`reapplyAll` 不能省。** 配置变了以后，屏幕上**已经渲染出来**的控件不会自己更新，
+  必须主动遍历视图树重新刷一遍 alpha，否则看起来就是「改了没反应」。
+  不能复用 `applyToTree`：那个用 `findViewById` 只找每个 id 的第一个，
+  而 ViewPager 同时挂着 3 页；而且关掉总开关时 `isTarget` 返回 false，
+  `applyToTree` 直接不干活，界面会永远停在压暗状态。
+* **只给主进程装通道。** `Application#onCreate` 在每个进程都会跑，
+  给 push / messagesdk 也装一份的话，改一次设置要触发四五次重载。
+
+#### ⚠️ 装了新 APK 之后要手动打开一次模块界面
+
+Android 把刚安装、还没启动过的应用标记为 **stopped**，
+ColorOS 的关联启动管控会直接拦掉「宿主去启动模块」这一步：
+
+```
+W/OplusAppStartupManager: prevent start com.yytest.ksimmerse,
+    cmp ComponentInfo{com.yytest.ksimmerse/...ConfigProvider}
+    by contentprovider <宿主包名> callingUid 10527, scenePriority = 0
+E/ActivityThread: Failed to find provider info for com.yytest.ksimmerse.config
+```
+
+表现就是 `query` 返回 `null`、配置读不到。**手动打开一次模块界面**之后这个标记就清掉了，
+之后一直正常。为了不让用户踩这个坑，读不到时不会报错，
+而是每 3 秒静默重试一次（`retryConfigIfNeeded`），所以就算忘了，
+下次从模块界面切回宿主也会自动补上：
+
+```
+KSImmerse: 设置 Provider 暂无数据（启动），沿用默认值，稍后重试
+KSImmerse: config reloaded from provider（重试）: enabled=true alpha=0.1 ...
+```
+
+#### 实测（真机）
+
+```
+# 改设置时，宿主进程立刻收到回调
+config reloaded from provider（设置变化）: enabled=true alpha=0.49 ...
+# 而且已经渲染出来的控件当场跟着变
+MATCH: ... [0x7f090baa a=0.49 ...] [0x7f090bb4 a=0.49 ...]
+```
 
 ---
 

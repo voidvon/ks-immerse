@@ -3,6 +3,7 @@ package com.yytest.ksimmerse
 import android.content.SharedPreferences
 import android.content.res.Resources
 import android.view.View
+import android.view.ViewGroup
 import android.view.ViewParent
 
 /**
@@ -120,21 +121,30 @@ class ImmerseConfig {
     // ------------------------------------------------------------------ 配置读取
 
     /** 从（远程）SharedPreferences 载入配置；传 null 表示沿用默认值 */
-    fun bind(prefs: SharedPreferences?) {
-        enabled = prefs?.getBoolean(KEY_ENABLED, true) ?: true
-        alpha = (prefs?.getFloat(KEY_ALPHA, DEFAULT_ALPHA) ?: DEFAULT_ALPHA).coerceIn(0f, 1f)
-        fadeRightColumn = prefs?.getBoolean(KEY_RIGHT_COLUMN, true) ?: true
-        fadeBottomCaption = prefs?.getBoolean(KEY_BOTTOM_CAPTION, true) ?: true
-        fadeDisclaimer = prefs?.getBoolean(KEY_DISCLAIMER, true) ?: true
-        fadeBottomHot = prefs?.getBoolean(KEY_BOTTOM_HOT, true) ?: true
-        fadePendant = prefs?.getBoolean(KEY_PENDANT, true) ?: true
-        pinSearchBubble = prefs?.getBoolean(KEY_PIN_SEARCH, true) ?: true
-        containVideo = prefs?.getBoolean(KEY_CONTAIN_VIDEO, true) ?: true
-        skipAd = prefs?.getBoolean(KEY_SKIP_AD, false) ?: false
-        autoSkipUnmatched = prefs?.getBoolean(KEY_AUTO_SKIP_UNMATCHED, true) ?: true
-        debugDumpTree = prefs?.getBoolean(KEY_DEBUG_DUMP, false) ?: false
+    fun bind(prefs: SharedPreferences?) = bindWith { prefs?.all?.get(it) }
+
+    /** 从 ContentProvider 送来的「键 → 值」载入配置 */
+    fun bindValues(values: Map<String, Any?>) = bindWith { values[it] }
+
+    private fun bindWith(get: (String) -> Any?) {
+        enabled = bool(get(KEY_ENABLED), true)
+        alpha = float(get(KEY_ALPHA), DEFAULT_ALPHA).coerceIn(0f, 1f)
+        fadeRightColumn = bool(get(KEY_RIGHT_COLUMN), true)
+        fadeBottomCaption = bool(get(KEY_BOTTOM_CAPTION), true)
+        fadeDisclaimer = bool(get(KEY_DISCLAIMER), true)
+        fadeBottomHot = bool(get(KEY_BOTTOM_HOT), true)
+        fadePendant = bool(get(KEY_PENDANT), true)
+        pinSearchBubble = bool(get(KEY_PIN_SEARCH), true)
+        containVideo = bool(get(KEY_CONTAIN_VIDEO), true)
+        skipAd = bool(get(KEY_SKIP_AD), false)
+        autoSkipUnmatched = bool(get(KEY_AUTO_SKIP_UNMATCHED), true)
+        debugDumpTree = bool(get(KEY_DEBUG_DUMP), false)
         rebuild()
     }
+
+    private fun bool(v: Any?, d: Boolean): Boolean = (v as? Boolean) ?: d
+
+    private fun float(v: Any?, d: Float): Float = (v as? Number)?.toFloat() ?: d
 
     // ------------------------------------------------------------------ 资源名解析
 
@@ -238,6 +248,38 @@ class ImmerseConfig {
             }
         }
         return applied.toIntArray()
+    }
+
+    /**
+     * 设置被改动之后，把当前视图树上**所有**目标控件重新刷一遍。
+     *
+     * 为什么不能复用 [applyToTree]：那个方法用 `findViewById` 只找每个 id 的**第一个**，
+     * 而 ViewPager 同时挂着 3 页，同一个 id 有 3 个实例；而且关掉总开关时
+     * [isTarget] 会返回 false，[applyToTree] 直接不干活，界面会永远停在压暗状态。
+     *
+     * 这里显式遍历整棵树，并且按新配置决定是压暗还是恢复成 1.0。
+     */
+    fun reapplyAll(root: View) {
+        val want = if (enabled && alpha < 1f) alpha else 1f
+        val t = targets
+        val found = ArrayList<View>(16)
+        collectById(root, t, found)
+        for (v in found) {
+            if (hasTargetAncestor(v)) continue
+            if (v.alpha != want) v.alpha = want
+        }
+    }
+
+    private fun collectById(v: View, ids: IntArray, out: MutableList<View>) {
+        for (i in ids.indices) {
+            if (ids[i] == v.id) {
+                out.add(v)
+                break
+            }
+        }
+        if (v is ViewGroup) {
+            for (i in 0 until v.childCount) collectById(v.getChildAt(i), ids, out)
+        }
     }
 
     // ------------------------------------------------------------------ 杂项

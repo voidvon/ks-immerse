@@ -9,8 +9,12 @@ import android.widget.Switch
 import android.widget.TextView
 
 /**
- * 模块设置界面。写入的是模块自己的 SharedPreferences（group = ks_immerse），
- * 被注入的快手进程通过 Vector 的 remote preferences 读取同一个 group。
+ * 模块设置界面。写入的是模块自己的 SharedPreferences（group = ks_immerse）。
+ *
+ * 写完立刻通过 [ConfigProvider.CONTENT_URI] 发通知，被注入的宿主进程注册了
+ * `ContentObserver`，收到后马上重新载入配置并刷新界面 —— 改设置实时生效，不用重启宿主。
+ *
+ * （`getRemotePreferences` 那条官方通道在 Vector 2.2 上拿不到数据，见 [ConfigProvider] 的注释。）
  */
 class SettingsActivity : Activity() {
 
@@ -108,5 +112,15 @@ class SettingsActivity : Activity() {
             .putBoolean(ImmerseConfig.KEY_SKIP_AD, cbSkipAd.isChecked)
             .putBoolean(ImmerseConfig.KEY_AUTO_SKIP_UNMATCHED, cbAutoSkip.isChecked)
             .apply()
+
+        // 通知已经注入到宿主进程的模块：配置变了，重新读一遍。
+        // 宿主那边注册了 ContentObserver，收到后立刻重新载入并刷新界面，无需重启宿主。
+        // 注意 commit 语义：apply() 是异步落盘，但同进程内读 SharedPreferences 立刻可见，
+        // 而 Provider 的 query() 就跑在本进程，所以这里紧接着 notify 是安全的。
+        try {
+            contentResolver.notifyChange(ConfigProvider.CONTENT_URI, null)
+        } catch (t: Throwable) {
+            // 通知失败不影响写入本身，宿主下次查询仍能拿到新值
+        }
     }
 }

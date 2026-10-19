@@ -10,10 +10,20 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.KSImmerse">
 
-        <!-- LSPosed/Vector：允许被注入的宿主进程通过 getRemotePreferences 读到本模块的设置 -->
+        <!-- LSPosed/Vector：允许被注入的宿主进程通过 getRemotePreferences 读到本模块的设置。
+             实测在 Vector 2.2 上这条通道拿不到数据（返回空对象），真正生效的是下面那个
+             ContentProvider，这里保留只是为了兼容能正常工作的框架版本。 -->
         <meta-data
             android:name="xposedsharedprefs"
             android:value="true" />
+
+        <!-- 真正把设置送给宿主进程的通道：宿主查询它、并注册 ContentObserver 监听变化。
+             只读、无权限，暴露的只是透明度之类的界面偏好。 -->
+        <provider
+            android:name=".ConfigProvider"
+            android:authorities="com.yytest.ksimmerse.config"
+            android:exported="true"
+            android:grantUriPermissions="false" />
 
         <activity
             android:name=".SettingsActivity"
