@@ -59,8 +59,6 @@ class ImmerseModule : XposedModule() {
     @Volatile
     private var lastDecor: java.lang.ref.WeakReference<View>? = null
 
-    /** contain 修正次数（诊断用） */
-
     /** 固定位置的诊断日志预算 */
     private val pinLogBudget = java.util.concurrent.atomic.AtomicInteger(40)
 
@@ -482,7 +480,6 @@ class ImmerseModule : XposedModule() {
             } catch (_: Throwable) {
             }
             try {
-                if (config.skipAd) adTick()
             } catch (_: Throwable) {
             }
             try {
@@ -904,135 +901,6 @@ class ImmerseModule : XposedModule() {
         }
     }
 
-    // ------------------------------------------------------------------ 广告快进
-
-    /** 当前正在展示的「广告」标签（用来判断什么时候离开广告，好复位状态） */
-    @Volatile
-    private var adLabelRef: java.lang.ref.WeakReference<View>? = null
-
-    /** 已经识别过的广告标签（弱引用，避免持有被回收页面的视图） */
-    private val adHandled: MutableMap<View, Boolean> =
-        Collections.synchronizedMap(WeakHashMap<View, Boolean>())
-
-    /** 上次 seek 的时刻，避免 150ms 轮询里连发 */
-    @Volatile
-    private var lastAdSeekAt: Long = 0L
-
-    private val adSeekCount = AtomicInteger(0)
-
-    /** 广告相关日志预算（诊断用，避免刷屏） */
-    private val adLogBudget = AtomicInteger(120)
-
-    @Volatile
-    private var adLoopLogged = false
-
-    @Volatile
-    private var lastAdProbeAt = 0L
-
-    @Volatile
-    private var lastAdProbe = ""
-
-    @Volatile
-    private var playerProbedFor: java.lang.ref.WeakReference<View>? = null
-
-    /**
-     * 每个页面轮询一次：底部信息区里出现可见的「广告」标签 ⇒ 这是广告 ⇒ 快进到最后 0.5 秒。
-     *
-     * 判定依据见 [Targets.ID_AD_LABEL]：只有广告视频才会把那个 LinearLayout 设成 VISIBLE。
-     */
-    private fun adTick() {
-        val decor = lastDecor?.get() ?: return
-        if (!decor.isAttachedToWindow) return
-        if (!adLoopLogged) {
-            adLoopLogged = true
-            logAd("AD loop 启动 contain=${config.containVideo} skipAd=${config.skipAd}")
-        }
-        val container = findVisibleVideoFrame(decor) ?: return
-        playerProbe(container)
-        val label = findVisibleAdLabel(decor)
-        if (label == null) {
-            if (adLabelRef != null) {
-                adLabelRef = null
-                adHandled.clear()
-                logAd("AD leave：广告标签消失，状态复位")
-            }
-            return
-        }
-        adLabelRef = java.lang.ref.WeakReference(label)
-        val firstTime = adHandled.put(label, true) == null
-        if (firstTime) {
-            val loc = IntArray(2)
-            label.getLocationOnScreen(loc)
-            logAd(
-                "AD detect id=${hex(label.id)} class=${label.javaClass.name} " +
-                    "at=(${loc[0]},${loc[1]}) ${label.width}x${label.height} vis=${label.visibility}"
-            )
-            dumpAdDiag(label)
-        }
-        seekAdToEnd(container, firstTime)
-    }
-
-    /** 诊断：每个视频页只做一次播放器发现，把结果和耗时记下来 */
-    private fun playerProbe(container: View) {
-        if (playerProbedFor?.get() === container) return
-        playerProbedFor = java.lang.ref.WeakReference(container)
-        val t0 = android.os.SystemClock.uptimeMillis()
-        val p = findPlayer(container)
-        val dt = android.os.SystemClock.uptimeMillis() - t0
-        if (p == null) {
-            logAd("PLAYER probe：未找到播放器 (${dt}ms) container=${container.javaClass.simpleName}")
-        } else {
-            logAd(
-                "PLAYER probe：${p.javaClass.name} dur=${callLong(p, "getDuration")} " +
-                    "pos=${callLong(p, "getCurrentPosition")} playing=${callBoolean(p, "isPlaying")} (${dt}ms)"
-            )
-        }
-    }
-
-    /**
-     * 诊断：每秒扫一次整棵视图树里的「广告标签」id（**不看可见性**），
-     * 状态有变化就记一条日志。用来确认 id 是否对得上、以及广告/非广告时的可见性差异。
-     */
-    private fun adProbe(decor: View) {
-        val now = android.os.SystemClock.uptimeMillis()
-        if (now - lastAdProbeAt < 1000L) return
-        lastAdProbeAt = now
-        val out = ArrayList<View>(4)
-        collectAnyById(decor, config.adLabelIds(), out)
-        val sb = StringBuilder()
-        for (v in out) {
-            val loc = IntArray(2)
-            v.getLocationOnScreen(loc)
-            sb.append("[id=").append(hex(v.id))
-                .append(" vis=").append(v.visibility)
-                .append(" shown=").append(v.isShown)
-                .append(" ").append(v.width).append('x').append(v.height)
-                .append(" at=").append(loc[0]).append(',').append(loc[1])
-                .append(" cls=").append(v.javaClass.simpleName)
-                .append(" kids=").append((v as? ViewGroup)?.childCount ?: -1)
-                .append("] ")
-        }
-        val s = if (sb.isEmpty()) "none" else sb.toString()
-        if (s != lastAdProbe) {
-            lastAdProbe = s
-            logAd("AD probe: $s")
-        }
-    }
-
-    /**
-     * 在 decorView 里找**可见**的广告标签。
-     * 页面会被 ViewPager 缓存，回收页里的标签可能还留着 VISIBLE，所以要求 isShown()。
-     */
-    private fun findVisibleAdLabel(decor: View): View? {
-        val ids = config.adLabelIds()
-        val out = ArrayList<View>(2)
-        collectAnyById(decor, ids, out)
-        for (v in out) {
-            if (v.isShown && v.width > 0 && v.height > 0) return v
-        }
-        return null
-    }
-
     /**
      * 评论区之类的浮层有没有开着。
      *
@@ -1065,47 +933,9 @@ class ImmerseModule : XposedModule() {
         }
     }
 
-    /** 把广告快进到「总时长 - 0.5s」。找不到播放器/时长未知时只记日志，不动播放。 */
-    private fun seekAdToEnd(container: View, firstTime: Boolean) {
-        val player = findPlayer(container)
-        if (player == null) {
-            if (firstTime || adLogBudget.getAndDecrement() > 0) {
-                logAd("AD 未找到播放器实例（container=${container.javaClass.simpleName}）")
-            }
-            return
-        }
-        val duration = callLong(player, "getDuration") ?: 0L
-        if (duration <= 0L) {
-            if (firstTime) logAd("AD player=${player.javaClass.name} duration=$duration（尚未就绪）")
-            return
-        }
-        val pos = callLong(player, "getCurrentPosition") ?: 0L
-        val target = (duration - ImmerseConfig.AD_TAIL_MS).coerceAtLeast(0L)
-        if (firstTime) {
-            logAd("AD player=${player.javaClass.name} dur=$duration pos=$pos target=$target")
-        }
-        // 已经在结尾附近就不重复 seek；若广告循环回开头（pos 变小）会自动再跳一次
-        if (pos >= target - 300L) return
-        val now = android.os.SystemClock.uptimeMillis()
-        if (now - lastAdSeekAt < 1200L) return
-        lastAdSeekAt = now
-        val ok = callSeekTo(player, target)
-        val n = adSeekCount.incrementAndGet()
-        logAd("AD seek #$n -> ${target}ms (dur=$duration pos=$pos) ok=$ok")
-    }
-
-    /** 诊断：把广告标签所在子树 dump 出来（只在 debugDumpTree 打开时） */
-    private fun dumpAdDiag(label: View) {
-        if (!config.debugDumpTree) return
-        val out = ArrayList<String>()
-        walkSubtree(label, 0, out)
-        logAd("AD tree root=${label.javaClass.name} lines=${out.size}")
-        for (l in out) logAd("AD   $l")
-    }
-
     // ------------------------------------------------ 播放器实例发现（反射）
 
-    /** 快手播放器可能实现的接口（同名方法 seekTo/getDuration/getCurrentPosition 未被混淆） */
+    /** 宿主播放器可能实现的接口（`getVideoWidth`/`getVideoHeight`/`getDuration` 这些方法名没有被混淆） */
     private val PLAYER_IFACES = arrayOf(
         "com.kwai.framework.player.core.b",
         "com.kwai.video.wayne.player.main.IWaynePlayer",
@@ -1149,12 +979,7 @@ class ImmerseModule : XposedModule() {
                         } catch (_: Throwable) {
                             null
                         }
-                        if (o != null && isPlayer(o)) {
-                            if (adLogBudget.getAndDecrement() > 0) {
-                                logAd("AD player via ctx.$name($iface) -> ${o.javaClass.name}")
-                            }
-                            return o
-                        }
+                        if (o != null && isPlayer(o)) return o
                     }
                 }
             }
@@ -1228,12 +1053,6 @@ class ImmerseModule : XposedModule() {
             val d = callLong(p, "getDuration") ?: 0L
             val playing = callBoolean(p, "isPlaying")
             val score = d + if (playing) 1_000_000_000_000L else 0L
-            if (adLogBudget.getAndDecrement() > 0) {
-                logAd(
-                    "AD candidate ${p.javaClass.name} dur=$d pos=${callLong(p, "getCurrentPosition")} " +
-                        "playing=$playing"
-                )
-            }
             if (score > bestScore) {
                 bestScore = score
                 best = p
@@ -1304,36 +1123,10 @@ class ImmerseModule : XposedModule() {
         false
     }
 
-    private fun callSeekTo(o: Any, ms: Long): Boolean {
-        for (m in o.javaClass.methods) {
-            if (m.name != "seekTo") continue
-            val ps = m.parameterTypes
-            try {
-                m.isAccessible = true
-                when {
-                    ps.size == 1 && ps[0] == Long::class.javaPrimitiveType -> {
-                        m.invoke(o, ms)
-                        return true
-                    }
-                    ps.size == 2 && ps[1] == Long::class.javaPrimitiveType -> {
-                        m.invoke(o, 0, ms)
-                        return true
-                    }
-                }
-            } catch (_: Throwable) {
-            }
-        }
-        return false
-    }
-
     private fun findById(root: View, id: Int): View? = try {
         root.findViewById(id)
     } catch (_: Throwable) {
         null
-    }
-
-    private fun logAd(msg: String) {
-        if (adLogBudget.getAndDecrement() > -200) logI(msg)
     }
 
     // ---------------------------------------------------- 沉浸没生效 ⇒ 自动划走
@@ -1508,10 +1301,6 @@ class ImmerseModule : XposedModule() {
             logI("MATCH 诊断异常: $t")
         }
 
-        if (config.debugDumpTree) try {
-            adProbe(decor)
-        } catch (_: Throwable) {
-        }
         if (config.debugDumpTree) try {
             dumpPageOnce(decor)
         } catch (t: Throwable) {

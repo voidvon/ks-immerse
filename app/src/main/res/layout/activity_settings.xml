@@ -112,13 +112,6 @@
             android:text="@string/label_auto_skip_unmatched" />
 
         <CheckBox
-            android:id="@+id/cb_skip_ad"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:minHeight="48dp"
-            android:text="@string/label_skip_ad" />
-
-        <CheckBox
             android:id="@+id/cb_kill_double_tap"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

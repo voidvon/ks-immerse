@@ -30,7 +30,6 @@ class SettingsActivity : Activity() {
     private lateinit var cbPendant: CheckBox
     private lateinit var cbPinSearch: CheckBox
     private lateinit var cbContainVideo: CheckBox
-    private lateinit var cbSkipAd: CheckBox
     private lateinit var cbAutoSkip: CheckBox
     private lateinit var cbKillDoubleTap: CheckBox
 
@@ -42,6 +41,10 @@ class SettingsActivity : Activity() {
         setContentView(R.layout.activity_settings)
         prefs = getSharedPreferences(ImmerseConfig.PREFS_GROUP, MODE_PRIVATE)
 
+        // 清理历史上移除过的开关，别让旧值一直留在文件里（读配置时本来就会忽略未知键，
+        // 这里只是让落盘内容保持干净）
+        prefs.edit().remove("skip_ad").apply()
+
         swEnabled = findViewById(R.id.sw_enabled)
         seekAlpha = findViewById(R.id.seek_alpha)
         tvAlphaValue = findViewById(R.id.tv_alpha_value)
@@ -52,7 +55,6 @@ class SettingsActivity : Activity() {
         cbPendant = findViewById(R.id.cb_pendant)
         cbPinSearch = findViewById(R.id.cb_pin_search)
         cbContainVideo = findViewById(R.id.cb_contain_video)
-        cbSkipAd = findViewById(R.id.cb_skip_ad)
         cbAutoSkip = findViewById(R.id.cb_auto_skip)
         cbKillDoubleTap = findViewById(R.id.cb_kill_double_tap)
 
@@ -67,7 +69,6 @@ class SettingsActivity : Activity() {
         cbPendant.isChecked = prefs.getBoolean(ImmerseConfig.KEY_PENDANT, true)
         cbPinSearch.isChecked = prefs.getBoolean(ImmerseConfig.KEY_PIN_SEARCH, true)
         cbContainVideo.isChecked = prefs.getBoolean(ImmerseConfig.KEY_CONTAIN_VIDEO, true)
-        cbSkipAd.isChecked = prefs.getBoolean(ImmerseConfig.KEY_SKIP_AD, false)
         cbAutoSkip.isChecked = prefs.getBoolean(ImmerseConfig.KEY_AUTO_SKIP_UNMATCHED, true)
         cbKillDoubleTap.isChecked = prefs.getBoolean(ImmerseConfig.KEY_KILL_DOUBLE_TAP, true)
         restoring = false
@@ -81,7 +82,6 @@ class SettingsActivity : Activity() {
         cbPendant.setOnCheckedChangeListener { _, _ -> persist() }
         cbPinSearch.setOnCheckedChangeListener { _, _ -> persist() }
         cbContainVideo.setOnCheckedChangeListener { _, _ -> persist() }
-        cbSkipAd.setOnCheckedChangeListener { _, _ -> persist() }
         cbAutoSkip.setOnCheckedChangeListener { _, _ -> persist() }
         cbKillDoubleTap.setOnCheckedChangeListener { _, _ -> persist() }
 
@@ -113,7 +113,6 @@ class SettingsActivity : Activity() {
             .putBoolean(ImmerseConfig.KEY_PENDANT, cbPendant.isChecked)
             .putBoolean(ImmerseConfig.KEY_PIN_SEARCH, cbPinSearch.isChecked)
             .putBoolean(ImmerseConfig.KEY_CONTAIN_VIDEO, cbContainVideo.isChecked)
-            .putBoolean(ImmerseConfig.KEY_SKIP_AD, cbSkipAd.isChecked)
             .putBoolean(ImmerseConfig.KEY_AUTO_SKIP_UNMATCHED, cbAutoSkip.isChecked)
             .putBoolean(ImmerseConfig.KEY_KILL_DOUBLE_TAP, cbKillDoubleTap.isChecked)
             .apply()

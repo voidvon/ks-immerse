@@ -170,34 +170,6 @@ const val CLASS_GESTURE_VIEW = "com.kwai.feed.player.ui.GestureView"
 
     // ------------------------------------------------------------------ 广告标签
 
-    /**
-     * 视频广告的「广告」小标签容器。
-     *
-     * 实测依据（classes3.dex）：
-     * `com.yxcorp.gifshow.ad.detail.presenter.ad.label.thanos.a`（即
-     * `ThanosAdMutableLabelPresenter` 家族）的 `doBindView()` 里
-     * `findViewById(0x7f091b68)` 拿到一个 **LinearLayout** 存进字段 `g`；
-     * `onBind()` 里只有 `PhotoAdvertisement.AdData.ExtraDisplayInfo.mTagInfoList`
-     * 非空时才 `setVisibility(VISIBLE)` 并往里塞标签控件（`f4d/a.a(ViewGroup)`）。
-     *
-     * 也就是说：**这个容器可见 == 当前视频是广告**；
-     * 普通视频里这个 presenter 根本不会被创建，容器保持布局里的 GONE。
-     * 它和「搜画面」气泡一样是 a11y 不可见的（uiautomator 里会被跳过），
-     * 所以只能进程内按 id 找。
-     */
-    const val NAME_AD_LABEL = "slide_play_ad_label_container"
-    const val ID_AD_LABEL = 0x7f091b68
-
-    /** 左下角广告标签（部分广告样式用它） */
-    const val NAME_AD_LABEL_LEFT = "icon_left_bottom_ad_label"
-    const val ID_AD_LABEL_LEFT = 0x7f090cc5
-
-    /** 「广告标签」分组：命中任意一个且可见即判定为广告 */
-    val AD_LABEL = arrayOf(
-        NAME_AD_LABEL to ID_AD_LABEL,
-        NAME_AD_LABEL_LEFT to ID_AD_LABEL_LEFT,
-    )
-
     // ------------------------------------------------------------------ 悬浮挂件
 
     /**

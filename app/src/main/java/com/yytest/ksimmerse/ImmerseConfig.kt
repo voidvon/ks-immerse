@@ -25,7 +25,6 @@ class ImmerseConfig {
         const val KEY_PENDANT = "fade_pendant"
         const val KEY_PIN_SEARCH = "pin_search_bubble"
         const val KEY_CONTAIN_VIDEO = "contain_video"
-        const val KEY_SKIP_AD = "skip_ad"
         const val KEY_AUTO_SKIP_UNMATCHED = "auto_skip_unmatched"
         const val KEY_DEBUG_DUMP = "debug_dump_tree"
         const val KEY_KILL_DOUBLE_TAP = "kill_double_tap"
@@ -33,8 +32,6 @@ class ImmerseConfig {
         /** 需求：右侧栏与底部信息区改为 0.1 透明度，保留可点击 */
         const val DEFAULT_ALPHA = 0.1f
 
-        /** 广告快进的目标：跳到「总时长 - 这个值」，也就是最后 0.5 秒 */
-        const val AD_TAIL_MS = 500L
     }
 
     @Volatile
@@ -68,11 +65,6 @@ class ImmerseConfig {
     /** 视频按 contain 显示：完整画面，不裁切两侧 */
     @Volatile
     var containVideo: Boolean = true
-        private set
-
-    /** 检测到底部出现「广告」标签时，把进度快进到最后 0.5 秒 */
-    @Volatile
-    var skipAd: Boolean = false
         private set
 
     /**
@@ -112,8 +104,6 @@ class ImmerseConfig {
     @Volatile
     private var hotIds: IntArray = idsOf(Targets.BOTTOM_HOT)
     @Volatile
-    private var adLabelIds: IntArray = idsOf(Targets.AD_LABEL)
-    @Volatile
     private var overlayIds: IntArray = idsOf(Targets.OVERLAY)
 
     /** 判定"自动划走"之前要排除的浮层（评论区等） */
@@ -148,7 +138,6 @@ class ImmerseConfig {
         fadePendant = bool(get(KEY_PENDANT), true)
         pinSearchBubble = bool(get(KEY_PIN_SEARCH), true)
         containVideo = bool(get(KEY_CONTAIN_VIDEO), true)
-        skipAd = bool(get(KEY_SKIP_AD), false)
         autoSkipUnmatched = bool(get(KEY_AUTO_SKIP_UNMATCHED), true)
         debugDumpTree = bool(get(KEY_DEBUG_DUMP), false)
         killDoubleTap = bool(get(KEY_KILL_DOUBLE_TAP), true)
@@ -174,7 +163,6 @@ class ImmerseConfig {
         captionIds = resolve(res, Targets.BOTTOM_CAPTION, captionIds)
         disclaimerIds = resolve(res, Targets.DISCLAIMER, disclaimerIds)
         hotIds = resolve(res, Targets.BOTTOM_HOT, hotIds)
-        adLabelIds = resolve(res, Targets.AD_LABEL, adLabelIds)
         overlayIds = resolve(res, Targets.OVERLAY, overlayIds)
         rebuild()
         return true
@@ -208,9 +196,6 @@ class ImmerseConfig {
 
     /** 命中需要固定位置的控件？ */
     fun isPinTarget(id: Int): Boolean = enabled && pinSearchBubble && id == Targets.ID_SEARCH_BUBBLE
-
-    /** 当前生效的「广告标签」id 列表（热路径只扫这个小数组） */
-    fun adLabelIds(): IntArray = adLabelIds
 
     /** 所有需要降透明度的目标 id（用于判断"这一页到底有没有匹配上"） */
     fun targetIds(): IntArray = targets
@@ -319,11 +304,9 @@ class ImmerseConfig {
         append(" pendant=").append(fadePendant)
         append(" pinSearch=").append(pinSearchBubble)
         append(" containVideo=").append(containVideo)
-        append(" skipAd=").append(skipAd)
         append(" autoSkipUnmatched=").append(autoSkipUnmatched)
         append(" debug=").append(debugDumpTree)
         append(" killDoubleTap=").append(killDoubleTap)
-        append(" adLabel=").append(adLabelIds.joinToString(",") { hex(it) })
     }
 
     private fun hex(v: Int) = "0x" + Integer.toHexString(v)
