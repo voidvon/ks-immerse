@@ -188,22 +188,74 @@ class ImmerseModule : XposedModule() {
             return
         }
         if (map.isEmpty()) {
-            // 读不到就保持代码里的默认值 —— 不要 bind 一个空 map，那会把当前值重置掉
+            // 读不到（详见 [loadConfig] 的注释）—— 先用宿主自己存的上一次配置，
+            // 实在没有才退回代码默认值
+            val cached = readHostCache(ctx)
+            if (cached.isNotEmpty()) {
+                config.bindValues(cached)
+                configLoaded = true
+                logI("config from host cache（$why，Provider 读不到）: ${config.snapshot()}")
+                reapplyCurrentDecor()
+                return
+            }
             if (why != "重试") logI("设置 Provider 暂无数据（$why），沿用默认值，稍后重试")
             return
         }
         config.bindValues(map)
         configLoaded = true
         logI("config reloaded from provider（$why）: ${config.snapshot()}")
+        writeHostCache(ctx, map)
 
-        // 关键：立刻把新配置刷到**当前已经在屏幕上**的控件上，
-        // 否则透明度/开关要等控件下次挂载才生效，看起来就是"改了没反应"。
+        reapplyCurrentDecor()
+    }
+
+    /** 立刻把新配置刷到**当前已经在屏幕上**的控件上，
+     *  否则透明度/开关要等控件下次挂载才生效，看起来就是"改了没反应" */
+    private fun reapplyCurrentDecor() {
         try {
             val decor = lastDecor?.get()
             if (decor != null) config.reapplyAll(decor)
         } catch (t: Throwable) {
             logW("reapplyAll failed", t)
         }
+    }
+
+    /**
+     * 把读到的配置在**宿主自己的**存储里存一份。
+     *
+     * 为什么需要：模块的 Provider 会因为「刚装完 APK 还没启动过」被 ColorOS 拦掉
+     * （见 [loadConfig]），那时我们就只能拿代码默认值 —— 而默认值往往和用户的设置
+     * 不一样（比如自动划走的等待时间默认 1800ms、用户设的是 100ms），
+     * 表现就是「设置明明改了却没生效」。
+     *
+     * 存到宿主自己目录里，模块重装/被拦也不影响：下次读不到 Provider 就用这份缓存。
+     */
+    private fun writeHostCache(ctx: Context, map: Map<String, Any?>) {
+        try {
+            val sp = ctx.getSharedPreferences(CONFIG_CACHE, Context.MODE_PRIVATE)
+            val e = sp.edit().clear()
+            for ((k, v) in map) {
+                when (v) {
+                    is Boolean -> e.putBoolean(k, v)
+                    is Int -> e.putInt(k, v)
+                    is Float -> e.putFloat(k, v)
+                    is Long -> e.putLong(k, v)
+                    is String -> e.putString(k, v)
+                }
+            }
+            e.apply()
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun readHostCache(ctx: Context): Map<String, Any?> {
+        val out = HashMap<String, Any?>()
+        try {
+            val sp = ctx.getSharedPreferences(CONFIG_CACHE, Context.MODE_PRIVATE)
+            for ((k, v) in sp.all) if (v != null) out[k] = v
+        } catch (_: Throwable) {
+        }
+        return out
     }
 
     /** 还没读到配置就每 3 秒重试一次，直到成功（见 [loadConfig] 的注释） */
@@ -687,6 +739,9 @@ class ImmerseModule : XposedModule() {
     @Volatile
     private var tapPausedFrame = 0
 
+    /** 宿主机自己的配置缓存文件名（见 [writeHostCache]） */
+    private val CONFIG_CACHE = "ks_immerse_cache"
+
     private var tapDownAt = 0L
     private var tapDownX = 0f
     private var tapDownY = 0f
@@ -1140,6 +1195,10 @@ class ImmerseModule : XposedModule() {
     @Volatile
     private var pageSettledAt = 0L
 
+    /** 这一页第一次被看到的时刻，只用来在日志里报「判定用了多久」 */
+    @Volatile
+    private var pageStartAt = 0L
+
     /** 上一次看到的画面几何（纵向位置 + 高度），用来判断画面有没有停稳 */
     @Volatile
     private var lastFrameY = Int.MIN_VALUE
@@ -1258,7 +1317,7 @@ class ImmerseModule : XposedModule() {
 
     private fun immersiveTick(decor: View) {
         val now = android.os.SystemClock.uptimeMillis()
-        if (now - lastImmersiveProbeAt < 300L) return
+        if (now - lastImmersiveProbeAt < 100L) return
         lastImmersiveProbeAt = now
 
         // 诊断：把「可见页」上的目标控件状态记下来（变化时才打）
@@ -1341,7 +1400,10 @@ class ImmerseModule : XposedModule() {
         if (fid != pageId) {
             pageId = fid
             pageChecked = false
-            pageSettledAt = 0L
+            // 立刻开始计时：真在动的话下面那条几何检查会把它重置，
+            // 没必要额外等一拍确认"停稳"——那样会白白多等一个轮询周期
+            pageSettledAt = now
+            pageStartAt = now
             lastFrameY = y
             lastFrameH = h
             noteBlock("换了一页")
@@ -1350,7 +1412,7 @@ class ImmerseModule : XposedModule() {
         // 画面还在动（翻页动画 / 打开评论区都会改变画面几何）→ 重新计时。
         // 这一点顺带挡住了评论区：拉开评论时画面会变，计时被重置，
         // 而这一页早就判定过了，所以不会再划走。
-        if (y != lastFrameY || h != lastFrameH) {
+        if (Math.abs(y - lastFrameY) > 4 || Math.abs(h - lastFrameH) > 4) {
             lastFrameY = y
             lastFrameH = h
             pageSettledAt = 0L
@@ -1370,6 +1432,13 @@ class ImmerseModule : XposedModule() {
         // 等多久由设置项决定（画面一有变化就重新计时，见上面两处 return）
         if (now - pageSettledAt < config.autoSkipDelayMs) return
 
+        // 划走限流：必须在标记"已判定"之前判断，否则被限流的那一页会被标成
+        // 已判定、却永远不会划走（旧实现的 bug）
+        if (now - lastSwipeAt < 800L) {
+            noteBlock("划走限流中")
+            return
+        }
+
         // ---------------- 画面停稳，这一页只判定这一次 ----------------
         pageChecked = true
         val ok = try {
@@ -1381,7 +1450,7 @@ class ImmerseModule : XposedModule() {
         val judgeNo = judgeCount.incrementAndGet()
         if (ok) {
             seenMatchedOnce = true
-            logI("JUDGE #$judgeNo：这一页沉浸已生效，保持不动 (y=$y h=$h)")
+            logI("JUDGE #$judgeNo：这一页沉浸已生效，保持不动 (y=$y h=$h) 用时 ${now - pageStartAt}ms")
             noteBlock("")
             return
         }
@@ -1390,8 +1459,7 @@ class ImmerseModule : XposedModule() {
             logI("JUDGE #$judgeNo：这一页没生效，但还没确认过信息流，先不划 (y=$y h=$h)")
             return
         }
-        logI("JUDGE #$judgeNo：这一页沉浸没生效，划走 (y=$y h=$h)")
-        if (now - lastSwipeAt < 800L) return
+        logI("JUDGE #$judgeNo：这一页沉浸没生效，划走 (y=$y h=$h) 用时 ${now - pageStartAt}ms")
         lastSwipeAt = now
         val n = swipeCount.incrementAndGet()
         logI("UNMATCHED #$n：注入上滑手势翻页")

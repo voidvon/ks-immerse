@@ -216,6 +216,16 @@ val VIDEO_REF_IDS = intArrayOf(
 所以这个值决定的是「停稳之后还要再等多久」—— 调小划得更快，
 但调太小（页面还没渲染完就判定）容易把正常视频误判成"没生效"而误划。
 
+判定日志里带上了**从看到这一页到判定用了多久**，方便核对设置有没有生效：
+
+```
+JUDGE #4：这一页沉浸没生效，划走 (y=0 h=2157) 用时 531ms
+```
+
+`用时 = 翻页动画/布局停稳的时间 + 设置值`。停稳那段（约 400~500ms）省不掉 ——
+页面还在动的时候就判定会把正常视频误判成"没生效"。实测 delay=100ms 时 `用时` 在
+470~670ms，delay=1800ms 时在 2.2~2.4s，和设置是成正比的。
+
 判定结果每页打一行，便于核对「是不是真的只判定了一次」：
 
 ```
@@ -465,14 +475,27 @@ W/OplusAppStartupManager: prevent start com.yytest.ksimmerse,
 E/ActivityThread: Failed to find provider info for com.yytest.ksimmerse.config
 ```
 
-表现就是 `query` 返回 `null`、配置读不到。**手动打开一次模块界面**之后这个标记就清掉了，
-之后一直正常。为了不让用户踩这个坑，读不到时不会报错，
-而是每 3 秒静默重试一次（`retryConfigIfNeeded`），所以就算忘了，
-下次从模块界面切回宿主也会自动补上：
+表现就是 `query` 返回 `null`、配置读不到。
+
+**这个坑最恶心的地方是它完全静默**：读不到就落回代码默认值，而默认值往往和用户的
+设置不一样（比如自动划走的等待时间默认 1800ms、用户设的是 100ms），
+表面看就是「设置明明改了却没生效」。为此做了两层兜底：
+
+**① 宿主本地缓存。** 每次成功从 Provider 读到配置，就顺手往**宿主自己的**
+`shared_prefs/ks_immerse_cache.xml` 里存一份；下次读不到 Provider 就用这份缓存：
+
+```
+KSImmerse: config from host cache（启动，Provider 读不到）: ... autoSkipDelay=100
+```
+
+所以只要成功读到过一次，后面模块重装、被 ColorOS 拦住、甚至换了模块 APK，
+宿主的配置都不会丢。
+
+**② 每 3 秒静默重试**（`retryConfigIfNeeded`），Provider 一旦通了就切回实时通道：
 
 ```
 KSImmerse: 设置 Provider 暂无数据（启动），沿用默认值，稍后重试
-KSImmerse: config reloaded from provider（重试）: enabled=true alpha=0.1 ...
+KSImmerse: config reloaded from provider（重试）: ... autoSkipDelay=100
 ```
 
 #### 实测（真机）
